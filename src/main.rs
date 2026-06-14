@@ -1,23 +1,29 @@
 mod api;
 mod app;
 mod config;
+mod history;
 mod ui;
 
 use anyhow::Result;
-use app::{App, ChatMessage, Role, Screen, SetupField};
+use app::{
+    filtered_commands, menu_is_open, strip_think_chunk, App, ChatMessage, Role, Screen,
+    SetupField, ThinkState, TokenUsage, COMMANDS,
+};
 use api::{list_models, stream_chat, test_connection, StreamEvent};
 use config::{normalize_base_url, save};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug)]
 enum AppEvent {
     Key(KeyEvent),
     Api(ApiResponse),
-    Stream(StreamEvent),
+    Stream { epoch: u64, ev: StreamEvent },
     Tick,
 }
 
@@ -29,9 +35,39 @@ enum ApiResponse {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // CLI flags: print and exit before touching config or terminal.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("boblabs {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "boblabs — mIRC-style TUI chat for OpenAI-compatible LLM APIs\n\
+             \n\
+             USAGE:\n    \
+                 boblabs\n\
+             \n\
+             OPTIONS:\n    \
+                 -h, --help     print this help and exit\n    \
+                 -V, --version  print version and exit\n\
+             \n\
+             CONFIG:    ~/.config/boblabs/config.json\n  \
+             HISTORY:   ~/.config/boblabs/history.jsonl\n  \
+             KEYS:      see README.md"
+        );
+        return Ok(());
+    }
+
     // load config
     let cfg = config::load().unwrap_or_default();
     let mut app = App::new(cfg);
+    // load persistent message history (best effort)
+    if let Ok(saved) = history::load() {
+        if !saved.is_empty() {
+            app.messages.extend(saved);
+        }
+    }
 
     // terminal setup
     let mut stdout = std::io::stdout();
@@ -110,8 +146,10 @@ where
                     }
                 }
                 AppEvent::Api(resp) => handle_api_resp(app, resp),
-                AppEvent::Stream(se) => handle_stream(app, se),
-                AppEvent::Tick => {}
+                AppEvent::Stream { epoch, ev } => handle_stream(app, epoch, ev),
+                AppEvent::Tick => {
+                    app.spinner_frame = app.spinner_frame.wrapping_add(1);
+                }
             }
         }
     }
@@ -152,17 +190,26 @@ async fn handle_setup_key(app: &mut App, k: KeyEvent) -> Result<()> {
             app.setup_field = match app.setup_field {
                 SetupField::BaseUrl => SetupField::ApiKey,
                 SetupField::ApiKey => SetupField::Nick,
-                SetupField::Nick => SetupField::BaseUrl,
+                SetupField::Nick => SetupField::SystemPrompt,
+                SetupField::SystemPrompt => SetupField::BaseUrl,
             };
         }
         KeyCode::BackTab => {
             app.setup_field = match app.setup_field {
-                SetupField::BaseUrl => SetupField::Nick,
+                SetupField::BaseUrl => SetupField::SystemPrompt,
                 SetupField::ApiKey => SetupField::BaseUrl,
                 SetupField::Nick => SetupField::ApiKey,
+                SetupField::SystemPrompt => SetupField::Nick,
             };
         }
         KeyCode::Enter => {
+            // Shift+Enter inserts a newline in the system prompt field
+            if k.modifiers.contains(KeyModifiers::SHIFT)
+                && app.setup_field == SetupField::SystemPrompt
+            {
+                app.setup_system.push('\n');
+                return Ok(());
+            }
             let base = normalize_base_url(&app.setup_base);
             if base.is_empty() || app.setup_key.is_empty() {
                 app.setup_status = Some("ERROR: base URL and API key are required".to_string());
@@ -175,6 +222,7 @@ async fn handle_setup_key(app: &mut App, k: KeyEvent) -> Result<()> {
             } else {
                 app.setup_nick.trim().to_string()
             };
+            app.cfg.system_prompt = app.setup_system.clone();
             save(&app.cfg)?;
             app.setup_status = Some(format!(
                 "OK · saved to {}",
@@ -189,6 +237,7 @@ async fn handle_setup_key(app: &mut App, k: KeyEvent) -> Result<()> {
                 SetupField::BaseUrl => &mut app.setup_base,
                 SetupField::ApiKey => &mut app.setup_key,
                 SetupField::Nick => &mut app.setup_nick,
+                SetupField::SystemPrompt => &mut app.setup_system,
             };
             target.pop();
         }
@@ -200,6 +249,7 @@ async fn handle_setup_key(app: &mut App, k: KeyEvent) -> Result<()> {
                 SetupField::BaseUrl => &mut app.setup_base,
                 SetupField::ApiKey => &mut app.setup_key,
                 SetupField::Nick => &mut app.setup_nick,
+                SetupField::SystemPrompt => &mut app.setup_system,
             };
             target.push(c);
         }
@@ -272,31 +322,92 @@ async fn handle_chat_key(
 ) -> Result<()> {
     if app.streaming {
         if k.code == KeyCode::Esc {
+            // cancel the in-flight stream: signal task + bump epoch
+            // so any in-flight events from it get filtered out
+            if let Some(c) = app.stream_cancel.take() {
+                c.store(false, Ordering::SeqCst);
+            }
+            app.stream_epoch = app.stream_epoch.wrapping_add(1);
             app.streaming = false;
+            app.stream_buf.clear();
+            app.think_state = ThinkState::Normal;
+            app.think_pending.clear();
         }
         return Ok(());
     }
+
+    // Slash menu intercepts. Only keys that exclusively belong to the
+    // menu are handled here; everything else falls through to the normal
+    // chat handler so typing keeps working.
+    if menu_is_open(app) {
+        match k.code {
+            KeyCode::Up => {
+                if app.menu_idx > 0 {
+                    app.menu_idx -= 1;
+                }
+                return Ok(());
+            }
+            KeyCode::Down => {
+                let count = filtered_commands(&app.input).len();
+                if count > 0 && app.menu_idx + 1 < count {
+                    app.menu_idx += 1;
+                }
+                return Ok(());
+            }
+            KeyCode::Tab => {
+                let list = filtered_commands(&app.input);
+                let idx = app.menu_idx.min(list.len().saturating_sub(1));
+                if let Some(cmd) = list.get(idx) {
+                    app.input = format!("{} ", cmd);
+                }
+                return Ok(());
+            }
+            KeyCode::Esc => {
+                // close menu by clearing the in-progress command
+                app.input.clear();
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     match k.code {
         KeyCode::Esc => {
             app.screen = Screen::ModelSelect;
         }
         KeyCode::Enter => {
-            let text = app.input.trim().to_string();
+            // Shift+Enter inserts a newline (multi-line input)
+            if k.modifiers.contains(KeyModifiers::SHIFT) {
+                app.input.push('\n');
+                return Ok(());
+            }
+            // If the slash menu is visible, run the highlighted command
+            // rather than whatever the user has typed so far. This means
+            // "/h" + Enter runs /help, not "unknown command /h".
+            let text = if menu_is_open(app) {
+                let list = filtered_commands(&app.input);
+                let idx = app.menu_idx.min(list.len().saturating_sub(1));
+                list.get(idx).cloned().unwrap_or_else(|| app.input.trim().to_string())
+            } else {
+                app.input.trim().to_string()
+            };
             if text.is_empty() {
                 return Ok(());
             }
             if text.starts_with('/') {
-                handle_command(app, &text);
+                handle_command(app, tx, &text);
                 app.input.clear();
                 return Ok(());
             }
             app.input_history.push(text.clone());
             app.history_idx = None;
-            app.messages.push(ChatMessage {
+            let user_msg = ChatMessage {
                 role: Role::You,
                 content: text.clone(),
                 time: app::now(),
-            });
+            };
+            app.messages.push(user_msg.clone());
+            let _ = history::append_message(&user_msg);
             app.input.clear();
             app.scroll = 0;
             do_stream(app, tx.clone(), text);
@@ -343,34 +454,53 @@ async fn handle_chat_key(
     Ok(())
 }
 
-fn handle_command(app: &mut App, text: &str) {
+fn handle_command(
+    app: &mut App,
+    tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    text: &str,
+) {
     let mut parts = text.splitn(2, ' ');
     let cmd = parts.next().unwrap_or("");
     let _arg = parts.next().unwrap_or("").trim();
     match cmd {
         "/help" => {
-            app.messages.push(ChatMessage {
-                role: Role::System,
-                content: "Commands: /help /clear /model /setup /quit".to_string(),
-                time: app::now(),
-            });
+            let help = COMMANDS
+                .iter()
+                .map(|(c, d)| format!("  {} — {}", c, d))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let hint = "Shift+Enter = newline · Tab in /menu = complete · ↑/↓ = navigate";
+            let body = format!("{}\n{}", help, hint);
+            app.messages.push(ChatMessage::system(body));
         }
-        "/clear" => app.messages.clear(),
+        "/clear" => {
+            app.messages.clear();
+            let _ = history::clear();
+        }
         "/model" => {
             app.screen = Screen::ModelSelect;
+            // auto-refresh when entering via /model and we have no list
+            if app.models.is_empty()
+                && !app.fetching
+                && !app.testing
+                && app.cfg.is_configured()
+            {
+                do_fetch(app, tx.clone());
+            }
         }
         "/setup" => {
+            app.screen = Screen::Setup;
+        }
+        "/system" => {
+            app.setup_field = SetupField::SystemPrompt;
             app.screen = Screen::Setup;
         }
         "/quit" | "/exit" => {
             std::process::exit(0);
         }
         _ => {
-            app.messages.push(ChatMessage {
-                role: Role::Error,
-                content: format!("Unknown command: {}", cmd),
-                time: app::now(),
-            });
+            app.messages
+                .push(ChatMessage::error(format!("Unknown command: {}", cmd)));
         }
     }
 }
@@ -433,60 +563,110 @@ fn do_stream(app: &mut App, tx: tokio::sync::mpsc::UnboundedSender<AppEvent>, te
         });
         return;
     }
-    let mut history: Vec<(String, String)> = app
-        .messages
-        .iter()
-        .filter(|m| matches!(m.role, Role::You | Role::Bot))
-        .map(|m| {
-            let role = match m.role {
-                Role::You => "user".to_string(),
-                Role::Bot => "assistant".to_string(),
-                _ => "user".to_string(),
-            };
-            (role, m.content.clone())
-        })
-        .collect();
+    // cancel any prior stream first
+    if let Some(c) = app.stream_cancel.take() {
+        c.store(false, Ordering::SeqCst);
+    }
+    app.stream_epoch = app.stream_epoch.wrapping_add(1);
+    let epoch = app.stream_epoch;
+
+    let mut history: Vec<(String, String)> = Vec::new();
+    // system prompt: always send the effective one. App::new preloads the
+    // default if the user has not customised it, so this is never empty
+    // here, but we still trim defensively.
+    let sp = app.cfg.system_prompt.trim();
+    if !sp.is_empty() {
+        history.push(("system".to_string(), sp.to_string()));
+    }
+    history.extend(
+        app.messages
+            .iter()
+            .filter(|m| matches!(m.role, Role::You | Role::Bot))
+            .map(|m| {
+                let role = match m.role {
+                    Role::You => "user".to_string(),
+                    Role::Bot => "assistant".to_string(),
+                    _ => "user".to_string(),
+                };
+                (role, m.content.clone())
+            }),
+    );
     history.push(("user".to_string(), text));
 
     app.streaming = true;
     app.stream_buf.clear();
+    app.think_state = ThinkState::Normal;
+    app.think_pending.clear();
 
     let base = app.cfg.base_url.clone();
     let key = app.cfg.api_key.clone();
     let model = app.cfg.model.clone();
     let stream_tx = tx.clone();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let cancel_for_task = cancel.clone();
+    app.stream_cancel = Some(cancel);
 
     tokio::spawn(async move {
         match stream_chat(base, key, model, history).await {
             Ok(mut rx) => {
                 while let Some(ev) = rx.recv().await {
-                    if stream_tx.send(AppEvent::Stream(ev)).is_err() {
+                    if !cancel_for_task.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if stream_tx
+                        .send(AppEvent::Stream { epoch, ev })
+                        .is_err()
+                    {
                         break;
                     }
                 }
             }
             Err(e) => {
-                let _ = stream_tx
-                    .send(AppEvent::Stream(StreamEvent::Error(e.to_string())));
+                if cancel_for_task.load(Ordering::SeqCst) {
+                    let _ = stream_tx.send(AppEvent::Stream {
+                        epoch,
+                        ev: StreamEvent::Error(e.to_string()),
+                    });
+                }
             }
         }
     });
 }
 
-fn handle_stream(app: &mut App, se: StreamEvent) {
+fn handle_stream(app: &mut App, epoch: u64, se: StreamEvent) {
+    // filter out events from cancelled/old streams
+    if app.stream_epoch != epoch || !app.streaming {
+        return;
+    }
     match se {
         StreamEvent::Delta(s) => {
-            app.stream_buf.push_str(&s);
+            // strip <think>...</think> content before it hits the buffer
+            let clean = strip_think_chunk(&s, &mut app.think_state, &mut app.think_pending);
+            if !clean.is_empty() {
+                app.stream_buf.push_str(&clean);
+            }
         }
         StreamEvent::Done => {
+            // drain any safe text left in the think-strip buffer
+            if app.think_state == ThinkState::Normal && !app.think_pending.is_empty() {
+                let remaining = std::mem::take(&mut app.think_pending);
+                app.stream_buf.push_str(&remaining);
+            } else {
+                // stream ended mid-think (unclosed tag) -- drop the buffer
+                app.think_pending.clear();
+            }
+            app.think_state = ThinkState::Normal;
             if !app.stream_buf.is_empty() {
-                app.messages.push(ChatMessage {
+                let bot_msg = ChatMessage {
                     role: Role::Bot,
                     content: std::mem::take(&mut app.stream_buf),
                     time: app::now(),
-                });
+                };
+                let _ = history::append_message(&bot_msg);
+                app.messages.push(bot_msg);
             }
             app.streaming = false;
+            app.stream_cancel = None;
         }
         StreamEvent::Error(e) => {
             app.messages.push(ChatMessage {
@@ -496,6 +676,14 @@ fn handle_stream(app: &mut App, se: StreamEvent) {
             });
             app.streaming = false;
             app.stream_buf.clear();
+            app.stream_cancel = None;
+        }
+        StreamEvent::Usage(u) => {
+            app.last_usage = Some(TokenUsage {
+                prompt: u.prompt_tokens,
+                completion: u.completion_tokens,
+                total: u.total_tokens,
+            });
         }
     }
 }

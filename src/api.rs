@@ -82,6 +82,13 @@ struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +106,18 @@ struct StreamDelta {
 struct StreamChunk {
     #[serde(default)]
     choices: Vec<StreamChoice>,
+    #[serde(default)]
+    usage: Option<UsageChunk>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct UsageChunk {
+    #[serde(default)]
+    pub prompt_tokens: u32,
+    #[serde(default)]
+    pub completion_tokens: u32,
+    #[serde(default)]
+    pub total_tokens: u32,
 }
 
 /// Stream chat completion tokens. Returns a tokio mpsc receiver of deltas
@@ -122,6 +141,7 @@ pub async fn stream_chat(
             model,
             messages,
             stream: true,
+            stream_options: Some(StreamOptions { include_usage: true }),
         })
         .send()
         .await
@@ -164,10 +184,17 @@ pub async fn stream_chat(
                         }
                         match serde_json::from_str::<StreamChunk>(payload) {
                             Ok(c) => {
+                                if let Some(u) = c.usage.clone() {
+                                    if tx.send(StreamEvent::Usage(u)).await.is_err() {
+                                        return;
+                                    }
+                                }
                                 for choice in c.choices {
                                     if let Some(content) = choice.delta.content {
                                         if !content.is_empty() {
-                                            let _ = tx.send(StreamEvent::Delta(content)).await;
+                                            if tx.send(StreamEvent::Delta(content)).await.is_err() {
+                                                return;
+                                            }
                                         }
                                     }
                                 }
@@ -191,4 +218,5 @@ pub enum StreamEvent {
     Delta(String),
     Done,
     Error(String),
+    Usage(UsageChunk),
 }

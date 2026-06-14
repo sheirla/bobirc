@@ -1,6 +1,6 @@
 [package]
-name = "bobric"
-version = "0.1.0"
+name = "boblabs"
+version = "0.2.0"
 edition = "2021"
 description = "mIRC-style TUI chat for OpenAI-compatible LLM APIs"
 
@@ -15,6 +15,7 @@ anyhow = "1"
 dirs = "5"
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["clock"] }
+pulldown-cmark = { version = "0.10", default-features = false }
 
 [profile.release]
 opt-level = 3

@@ -10,6 +10,8 @@ pub struct Config {
     pub model: String,
     #[serde(default)]
     pub nick: String,
+    #[serde(default)]
+    pub system_prompt: String,
 }
 
 impl Config {
@@ -20,7 +22,7 @@ impl Config {
 
 pub fn config_path() -> Result<PathBuf> {
     let base = dirs::config_dir().context("no config dir on this platform")?;
-    let dir = base.join("bobric");
+    let dir = base.join("boblabs");
     std::fs::create_dir_all(&dir).context("create config dir")?;
     Ok(dir.join("config.json"))
 }

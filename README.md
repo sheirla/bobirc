@@ -1,10 +1,20 @@
-# BobRIC
+# Boblabs
 
 A mIRC-style TUI chat client for any OpenAI-compatible LLM API. Built in Rust with [ratatui](https://ratatui.rs).
+
+## Install
+
+```bash
+cargo install --path .
+```
+
+Drops the `boblabs` binary into `~/.cargo/bin/`. Make sure `~/.cargo/bin` is in your `PATH`.
 
 ## Run
 
 ```bash
+boblabs
+# or directly from the source tree:
 cargo run --release
 ```
 
@@ -67,7 +77,14 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 cargo build --release
 ```
 
-Output binary: `target/release/bobric`
+Output binary: `target/release/boblabs`
+
+## CLI flags
+
+```
+boblabs --version    # print version
+boblabs --help       # print usage
+```
 
 ## License
 
