@@ -164,6 +164,38 @@ Anything that speaks OpenAI chat completions + `/v1/models`:
 
 The `base_url` can end with or without `/v1` — both are normalised.
 
+## Uninstall
+
+Removes the binary **and** all per-user data (config, sessions,
+history) so the machine is left clean — no leftover caches.
+
+macOS / Linux:
+
+```bash
+curl -sSf https://raw.githubusercontent.com/sheirla/bobric/main/uninstall.sh | sh
+# skip confirmation:
+curl -sSf https://raw.githubusercontent.com/sheirla/bobric/main/uninstall.sh | sh -s -- --yes
+```
+
+Windows (PowerShell):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/sheirla/bobric/main/uninstall.ps1 | iex
+# skip confirmation (note: needs the -Yes passed through to the script):
+iwr -useb https://raw.githubusercontent.com/sheirla/bobric/main/uninstall.ps1 | iex -Args '-Yes'
+```
+
+What it removes:
+
+- `~/.config/bobric/` — config.json, sessions/, history.jsonl
+  (resolves `$XDG_CONFIG_HOME` first, then falls back to
+  `~/.config/bobric`)
+- `~/.cargo/bin/bobric` (or `%USERPROFILE%\.cargo\bin\bobric.exe`)
+- The `cargo` package-registry entry for `bobric` (best-effort, so
+  re-installing from a different source starts from a clean slate)
+
+Confirmation prompt before deletion (skippable via `--yes` / `-Yes`).
+
 ## Building
 
 ```bash

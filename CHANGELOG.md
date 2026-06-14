@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.1 -- 2026-06-15
+
+Polish pass.
+
+**Chat alignment**
+
+- Continuation lines (both from explicit `\n` in the message and from
+  Paragraph word-wrap) are indented to align with the start of the
+  content column, not column 0. The indent pad is a fixed 20 columns
+  (handles nicks up to ~12 chars including brackets comfortably).
+  Blank lines (e.g. between markdown paragraphs) stay blank so the
+  paragraph break is still visible.
+- The same indent pad is used for system/error messages, so the
+  whole chat now has a consistent left margin.
+
+**Uninstaller**
+
+- `uninstall.sh` (macOS / Linux bash) and `uninstall.ps1` (Windows
+  PowerShell) one-liner uninstallers. Confirm-before-delete
+  (skippable via `--yes` / `-Yes`).
+- Removes `~/.config/bobric/` (config + sessions + history),
+  `~/.cargo/bin/bobric` (or `%USERPROFILE%\.cargo\bin\bobric.exe`),
+  and the `cargo` package-registry entry for `bobric` (best-effort).
+  Leaves the machine fully clean -- no leftover caches.
+- README updated with the uninstall one-liners and a "What it
+  removes" section.
+
 ## 0.3.0 -- 2026-06-15
 
 Multi-session, popup system, markdown, search, polish.

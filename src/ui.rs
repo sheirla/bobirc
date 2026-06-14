@@ -650,6 +650,12 @@ fn wrap_pos(text: &str, width: usize) -> (usize, usize) {
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Width of the message prefix column (timestamp + nick + space).
+/// Used to align continuation lines under the content, not the start
+/// of the line. Generous enough for nicks up to ~12 chars
+/// (`<boblabs> `, `<setup_user> `, etc.).
+const CONTENT_INDENT_COLS: usize = 20;
+
 fn render_message(m: &ChatMessage, nick: &str, highlight: Option<&str>) -> Vec<Line<'static>> {
     let (nick_str, nick_color) = match m.role {
         Role::You => (format!("<{}>", nick), YOU),
@@ -693,14 +699,34 @@ fn render_message(m: &ChatMessage, nick: &str, highlight: Option<&str>) -> Vec<L
         return vec![Line::from(prefix)];
     }
 
-    let mut result = Vec::with_capacity(content_lines.len());
+    // Indent every continuation line so it sits under the content
+    // column, not column 0. Same applies to word-wrap continuations
+    // -- the indent pad goes BEFORE the content so the wrap aligns.
+    let indent_pad: String = " ".repeat(CONTENT_INDENT_COLS);
+    let pad_span = |spans: &mut Vec<Span<'static>>| {
+        // Prepend a single space pad span to the line. We don't want
+        // a styled span -- the pad is invisible.
+        spans.insert(
+            0,
+            Span::raw(indent_pad.clone()),
+        );
+    };
+
+    let mut result: Vec<Line<'static>> = Vec::with_capacity(content_lines.len());
     let mut iter = content_lines.into_iter();
     if let Some(first) = iter.next() {
         let mut first_spans = prefix;
         first_spans.extend(first.spans);
         result.push(Line::from(first_spans));
     }
-    result.extend(iter);
+    for mut line in iter {
+        // blank lines (e.g. between markdown paragraphs) stay blank
+        let is_blank = line.spans.iter().all(|s| s.content.trim().is_empty());
+        if !is_blank {
+            pad_span(&mut line.spans);
+        }
+        result.push(line);
+    }
     result
 }
 
