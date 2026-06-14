@@ -1,5 +1,5 @@
 [package]
-name = "boblabs"
+name = "bobric"
 version = "0.2.0"
 edition = "2021"
 description = "mIRC-style TUI chat for OpenAI-compatible LLM APIs"

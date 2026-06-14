@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod config;
 mod history;
+mod osc52;
 mod ui;
 
 use anyhow::Result;
@@ -38,22 +39,22 @@ async fn main() -> Result<()> {
     // CLI flags: print and exit before touching config or terminal.
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("boblabs {}", env!("CARGO_PKG_VERSION"));
+        println!("bobric {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "boblabs — mIRC-style TUI chat for OpenAI-compatible LLM APIs\n\
+            "bobric — mIRC-style TUI chat for OpenAI-compatible LLM APIs\n\
              \n\
              USAGE:\n    \
-                 boblabs\n\
+                 bobric\n\
              \n\
              OPTIONS:\n    \
                  -h, --help     print this help and exit\n    \
                  -V, --version  print version and exit\n\
              \n\
-             CONFIG:    ~/.config/boblabs/config.json\n  \
-             HISTORY:   ~/.config/boblabs/history.jsonl\n  \
+             CONFIG:    ~/.config/bobric/config.json\n  \
+             HISTORY:   ~/.config/bobric/history.jsonl\n  \
              KEYS:      see README.md"
         );
         return Ok(());
@@ -461,7 +462,7 @@ fn handle_command(
 ) {
     let mut parts = text.splitn(2, ' ');
     let cmd = parts.next().unwrap_or("");
-    let _arg = parts.next().unwrap_or("").trim();
+    let arg = parts.next().unwrap_or("").trim();
     match cmd {
         "/help" => {
             let help = COMMANDS
@@ -476,6 +477,67 @@ fn handle_command(
         "/clear" => {
             app.messages.clear();
             let _ = history::clear();
+        }
+        "/copy" => {
+            // copy the most recent bot message to the system clipboard
+            // via OSC52 escape. Works in most modern terminals (kitty,
+            // wezterm, alacritty >= 0.13, foot, iTerm2, Windows Terminal,
+            // recent gnome-terminal, etc).
+            let last_bot = app
+                .messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, Role::Bot))
+                .map(|m| m.content.clone());
+            match last_bot {
+                Some(text) => {
+                    let ok = osc52::copy_to_clipboard(&text);
+                    if ok {
+                        let preview = shorten(&text, 60);
+                        app.messages
+                            .push(ChatMessage::system(format!("Copied to clipboard: {}", preview)));
+                    } else {
+                        app.messages.push(ChatMessage::error(
+                            "Clipboard write rejected by terminal (OSC52 not supported)".to_string(),
+                        ));
+                    }
+                }
+                None => {
+                    app.messages
+                        .push(ChatMessage::error("Nothing to copy yet".to_string()));
+                }
+            }
+        }
+        "/export" => {
+            let path = if arg.is_empty() {
+                // default to <config_dir>/bobric-export-<timestamp>.txt
+                let stamp = app::now().replace(':', "");
+                let dir = match config::config_path().and_then(|p| {
+                    p.parent()
+                        .map(|p| p.to_path_buf())
+                        .ok_or_else(|| anyhow::anyhow!("no parent dir"))
+                }) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        app.messages
+                            .push(ChatMessage::error(format!("Cannot resolve export dir: {}", e)));
+                        return;
+                    }
+                };
+                dir.join(format!("bobric-export-{}.txt", stamp))
+            } else {
+                std::path::PathBuf::from(arg)
+            };
+            let text = format_chat_for_export(app);
+            match std::fs::write(&path, &text) {
+                Ok(_) => app.messages.push(ChatMessage::system(format!(
+                    "Exported {} messages to {}",
+                    app.messages.len(),
+                    path.display()
+                ))),
+                Err(e) => app.messages
+                    .push(ChatMessage::error(format!("Export failed: {}", e))),
+            }
         }
         "/model" => {
             app.screen = Screen::ModelSelect;
@@ -502,6 +564,64 @@ fn handle_command(
             app.messages
                 .push(ChatMessage::error(format!("Unknown command: {}", cmd)));
         }
+    }
+}
+
+/// Render the current in-memory chat as plain text suitable for pasting
+/// into a file or email. Markdown is stripped: bold/italic markers are
+/// removed, code fences flattened, headings keep the leading `#`s only.
+fn format_chat_for_export(app: &App) -> String {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    let mut out = String::new();
+    out.push_str(&format!("# bobric chat export — {}\n\n", app::now()));
+    for m in &app.messages {
+        let role = match m.role {
+            Role::You => "you",
+            Role::Bot => "boblabs",
+            Role::System => "system",
+            Role::Error => "error",
+        };
+        out.push_str(&format!("[{}] {}: ", m.time, role));
+        // strip markdown to plain text
+        let mut options = Options::empty();
+        options.insert(Options::ENABLE_STRIKETHROUGH);
+        let parser = Parser::new_ext(&m.content, options);
+        for ev in parser {
+            match ev {
+                Event::Text(t) | Event::Code(t) => out.push_str(&t),
+                Event::SoftBreak | Event::HardBreak => out.push('\n'),
+                Event::Start(Tag::Paragraph)
+                | Event::End(TagEnd::Paragraph)
+                | Event::Start(Tag::Item)
+                | Event::End(TagEnd::Item)
+                | Event::Start(Tag::Emphasis)
+                | Event::End(TagEnd::Emphasis)
+                | Event::Start(Tag::Strong)
+                | Event::End(TagEnd::Strong)
+                | Event::Start(Tag::Link { .. })
+                | Event::End(TagEnd::Link) => {}
+                Event::Start(Tag::Heading { .. }) => out.push_str("\n\n# "),
+                Event::End(TagEnd::Heading(_)) => out.push('\n'),
+                Event::Start(Tag::CodeBlock(_)) => out.push_str("\n```\n"),
+                Event::End(TagEnd::CodeBlock) => out.push_str("\n```\n"),
+                Event::Start(Tag::List(_)) => out.push('\n'),
+                Event::End(TagEnd::List(_)) => out.push('\n'),
+                Event::Rule => out.push_str("\n---\n"),
+                _ => {}
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn shorten(s: &str, n: usize) -> String {
+    let cleaned: String = s.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+    if cleaned.chars().count() <= n {
+        cleaned
+    } else {
+        let cut: String = cleaned.chars().take(n.saturating_sub(1)).collect();
+        format!("{}…", cut)
     }
 }
 

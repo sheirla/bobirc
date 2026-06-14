@@ -64,7 +64,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Screen::Chat => "CHAT",
     };
     let left = format!(
-        " boblabs v0.2 │ screen:{} │ server:{} │ nick:{} ",
+        " bobric v0.2 │ screen:{} │ server:{} │ nick:{} ",
         screen,
         short(&mask_url(&app.cfg.base_url), 32),
         app.cfg.nick,
@@ -508,7 +508,34 @@ fn flush_line(output: &mut Vec<Line<'static>>, current: &mut Vec<Span<'static>>)
     }
 }
 
+/// Push a blank line if the last line in `output` is non-empty (i.e. not
+/// already a separator). Safe on empty `output` -- first call always
+/// no-ops so we never panic on a leading heading/list/code/quote.
+fn push_blank_if_needed(output: &mut Vec<Line<'static>>) {
+    match output.last() {
+        Some(line) if line.spans.is_empty() => {} // already a blank
+        Some(_) => output.push(Line::from("")),
+        None => {} // empty output, nothing to separate from
+    }
+}
+
 fn render_markdown(text: &str) -> Vec<Line<'static>> {
+    // Render the markdown. If anything panics inside (e.g. an unexpected
+    // event sequence from a malformed partial stream), fall back to a
+    // single plain line so the TUI keeps running instead of dying.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        render_markdown_inner(text)
+    }));
+    match result {
+        Ok(lines) => lines,
+        Err(_) => vec![Line::from(Span::styled(
+            text.to_string(),
+            Style::default().fg(INPUT),
+        ))],
+    }
+}
+
+fn render_markdown_inner(text: &str) -> Vec<Line<'static>> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(text, options);
@@ -530,9 +557,7 @@ fn render_markdown(text: &str) -> Vec<Line<'static>> {
             }
             Event::Start(Tag::Heading { level, .. }) => {
                 flush_line(&mut output, &mut current);
-                if !output.is_empty() && !output.last().unwrap().spans.is_empty() {
-                    output.push(Line::from(""));
-                }
+                push_blank_if_needed(&mut output);
                 let prefix = match level {
                     HeadingLevel::H1 => "# ",
                     HeadingLevel::H2 => "## ",
@@ -552,9 +577,7 @@ fn render_markdown(text: &str) -> Vec<Line<'static>> {
             }
             Event::Start(Tag::BlockQuote) => {
                 flush_line(&mut output, &mut current);
-                if !output.is_empty() && !output.last().unwrap().spans.is_empty() {
-                    output.push(Line::from(""));
-                }
+                push_blank_if_needed(&mut output);
             }
             Event::End(TagEnd::BlockQuote) => {
                 flush_line(&mut output, &mut current);
@@ -562,9 +585,7 @@ fn render_markdown(text: &str) -> Vec<Line<'static>> {
             }
             Event::Start(Tag::CodeBlock(_)) => {
                 flush_line(&mut output, &mut current);
-                if !output.is_empty() && !output.last().unwrap().spans.is_empty() {
-                    output.push(Line::from(""));
-                }
+                push_blank_if_needed(&mut output);
                 in_code_block = true;
                 code_buf.clear();
             }
@@ -614,9 +635,7 @@ fn render_markdown(text: &str) -> Vec<Line<'static>> {
             }
             Event::Start(Tag::List(start)) => {
                 flush_line(&mut output, &mut current);
-                if !output.is_empty() && !output.last().unwrap().spans.is_empty() {
-                    output.push(Line::from(""));
-                }
+                push_blank_if_needed(&mut output);
                 list_stack.push(start);
             }
             Event::End(TagEnd::List(_)) => {

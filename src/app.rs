@@ -215,6 +215,8 @@ pub struct App {
 pub const COMMANDS: &[(&str, &str)] = &[
     ("/help", "show this command list"),
     ("/clear", "wipe chat + history file"),
+    ("/copy", "copy last bot reply to clipboard (OSC52)"),
+    ("/export", "save chat to file: /export <path>"),
     ("/model", "switch model"),
     ("/setup", "open connection config"),
     ("/system", "edit system prompt"),

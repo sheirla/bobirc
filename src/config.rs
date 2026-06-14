@@ -22,7 +22,7 @@ impl Config {
 
 pub fn config_path() -> Result<PathBuf> {
     let base = dirs::config_dir().context("no config dir on this platform")?;
-    let dir = base.join("boblabs");
+    let dir = base.join("bobric");
     std::fs::create_dir_all(&dir).context("create config dir")?;
     Ok(dir.join("config.json"))
 }
