@@ -478,9 +478,10 @@ async fn handle_chat_key(
         }
     }
 
-    // `?` opens a :messages-style popup of recent system + error
-    // messages. Cheap to collect (we already have them in app.messages).
-    if k.code == KeyCode::Char('?') && k.modifiers.is_empty() {
+    // F1 opens a :messages-style popup of recent system + error
+    // messages. (Was `?` before, but that conflicts with typing `?` in
+    // the chat input -- F-keys are unreachable from the input box.)
+    if k.code == KeyCode::F(1) {
         let lines: Vec<String> = app
             .messages
             .iter()
@@ -674,7 +675,7 @@ fn handle_command(
             let keys = "\
   F2               session nav mode (Up/Down/Enter/n/d/Esc)
   Alt+1..9         quick switch session
-  ?                open :messages log popup
+  F1               open :messages log popup
   Tab              autocomplete slash command (when / typed)
   Enter            send message / run command
   Shift+Enter      newline in input

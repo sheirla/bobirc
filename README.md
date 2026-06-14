@@ -119,7 +119,7 @@ To re-run setup later: `/setup`. To re-pick a model: `/model`.
 |---|---|
 | `F2` | Enter session nav mode (Up/Down/Enter/n/d/Esc) |
 | `Alt+1..9` | Quick switch session |
-| `?` | Open :messages log popup |
+| `F1` | Open :messages log popup |
 | `Tab` | Autocomplete slash command (when input starts with `/`) |
 | `Enter` | Send / run command |
 | `Shift+Enter` | Newline in input |
