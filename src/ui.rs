@@ -1,5 +1,5 @@
 use crate::app::{
-    filtered_commands, menu_is_open, App, ChatMessage, Role, Screen, SetupField, BOT_NAME,
+    filtered_commands, menu_is_open, App, ChatMessage, Popup, Role, Screen, SetupField, BOT_NAME,
     COMMANDS, ThinkState,
 };
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -27,7 +27,7 @@ const BG_HI: Color = Color::Rgb(0x28, 0x28, 0x18); // active field bg, slight ba
 const BG_SEL: Color = Color::Rgb(0x2A, 0x2A, 0x32);
 const STREAMING: Color = Color::Rgb(0xFF, 0xB3, 0x00);
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     f.render_widget(ratatui::widgets::Clear, area);
 
@@ -47,14 +47,166 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::Setup => draw_setup(f, app, v[1]),
         Screen::ModelSelect => draw_model_select(f, app, v[1]),
         Screen::Chat => {
-            draw_chat(f, app, v[1]);
+            // chat row: sessions panel on the left | chat area on the right
+            let h = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(24),
+                    Constraint::Min(20),
+                ])
+                .split(v[1]);
+            draw_sessions_panel(f, app, h[0]);
+            draw_chat(f, app, h[1]);
             if menu_is_open(app) {
-                draw_menu(f, app, v[1]);
+                draw_menu(f, app, h[1]);
             }
         }
     }
 
     draw_input(f, app, v[2]);
+    draw_toast(f, app, area);
+
+    // popup renders LAST so it sits on top of every other widget
+    if let Some(popup) = app.popup.as_ref() {
+        // clone what we need so we don't hold a borrow on `app` while
+        // rendering -- avoids a double-mutable-borrow conflict with
+        // the other draw calls
+        let popup_clone = popup.clone();
+        draw_popup(f, &popup_clone, area);
+    }
+}
+
+fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
+    let nav_mode = app.session_nav_mode;
+    let border_color = if nav_mode { TITLE } else { DIM };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(
+            if nav_mode { " Sessions (NAV) " } else { " Sessions " },
+            Style::default().fg(border_color).add_modifier(Modifier::BOLD),
+        ));
+    f.render_widget(block, area);
+
+    let inner = inset(area, 1);
+    let mut items: Vec<ListItem> = Vec::new();
+    if app.sessions.is_empty() {
+        items.push(ListItem::new(Span::styled(
+            "  (no sessions)",
+            Style::default().fg(DIM),
+        )));
+    } else {
+        for (i, m) in app.sessions.iter().enumerate() {
+            let is_active = m.id == app.active_session_id;
+            let is_selected = i == app.session_panel_idx;
+            let marker = if is_active { "● " } else { "○ " };
+            let row_text = format!("{}{}", marker, m.name);
+            let mut style = Style::default().fg(INPUT);
+            if is_active {
+                style = style.fg(BOT);
+            }
+            if is_selected {
+                style = style.bg(BG_SEL).add_modifier(Modifier::BOLD);
+            }
+            if is_selected && nav_mode {
+                style = style.fg(SEL);
+            }
+            let mut spans = vec![Span::styled(row_text, style)];
+            // small timestamp column on the right
+            if !m.updated_at.is_empty() {
+                spans.push(Span::styled(
+                    format!("  {}", m.updated_at),
+                    Style::default().fg(DIM),
+                ));
+            }
+            items.push(ListItem::new(Line::from(spans)));
+        }
+    }
+    let list = List::new(items);
+    f.render_widget(list, inner);
+
+    // small hint at the bottom of the panel
+    let hint = if nav_mode {
+        " ↑↓ nav  ⏎ open  n new  d del  Esc "
+    } else {
+        " F2 navigate  Alt+1..9 jump "
+    };
+    let hint_y = area.y + area.height.saturating_sub(1);
+    if hint_y >= area.y {
+        let p = Paragraph::new(Span::styled(hint, Style::default().fg(DIM)));
+        f.render_widget(p, Rect { x: area.x + 1, y: hint_y, width: area.width.saturating_sub(2), height: 1 });
+    }
+}
+
+fn draw_toast(f: &mut Frame, app: &App, area: Rect) {
+    // auto-dismiss after 3.5s
+    const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
+    let (msg, set_at) = match &app.toast {
+        Some(t) => t,
+        None => return,
+    };
+    if set_at.elapsed() > TOAST_TTL {
+        return;
+    }
+    let w = (msg.chars().count() as u16 + 4).min(area.width.saturating_sub(4));
+    let h = 3u16;
+    let x = area.x + area.width.saturating_sub(w + 2);
+    let y = area.y + 1;
+    let toast_area = Rect { x, y, width: w, height: h };
+    f.render_widget(Clear, toast_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(TITLE))
+        .title(Span::styled(
+            " toast ",
+            Style::default().fg(TITLE).add_modifier(Modifier::BOLD),
+        ));
+    let p = Paragraph::new(msg.as_str())
+        .block(block)
+        .style(Style::default().fg(INPUT).bg(BG));
+    f.render_widget(p, toast_area);
+}
+
+fn draw_popup(f: &mut Frame, app: &Popup, area: Rect) {
+    // Centered modal, ~60% width, ~60% height, min 40x10.
+    let popup_w = (area.width * 3 / 5).max(40).min(area.width.saturating_sub(4));
+    let popup_h = (area.height * 3 / 5)
+        .max(10)
+        .min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    let popup_area = Rect { x, y, width: popup_w, height: popup_h };
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(TITLE))
+        .title(Span::styled(
+            format!(" {} ", app.title),
+            Style::default().fg(TITLE).add_modifier(Modifier::BOLD),
+        ));
+    let p = Paragraph::new(app.body.as_str())
+        .block(block)
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .scroll((app.scroll, 0))
+        .style(Style::default().fg(INPUT));
+    f.render_widget(p, popup_area);
+
+    // hint at the very bottom of the popup
+    let hint = " Esc/Enter close · j/k · PgUp/PgDn · g/G ";
+    let hint_y = popup_area.y + popup_area.height.saturating_sub(1);
+    if hint_y >= popup_area.y {
+        let hint_p = Paragraph::new(Span::styled(hint, Style::default().fg(DIM)));
+        f.render_widget(
+            hint_p,
+            Rect {
+                x: popup_area.x + 1,
+                y: hint_y,
+                width: popup_area.width.saturating_sub(2),
+                height: 1,
+            },
+        );
+    }
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -82,6 +234,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let state = if app.streaming {
         let label = if app.think_state == ThinkState::InThink {
             " ● thinking "
+        } else if app.stream_buf.is_empty() {
+            " ● awaiting "
         } else {
             " ● streaming "
         };
@@ -270,7 +424,7 @@ fn draw_model_select(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(help), rows[2]);
 }
 
-fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
+fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     // split: chat (left) | user list (right 18 cols)
     let h = Layout::default()
         .direction(Direction::Horizontal)
@@ -281,7 +435,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     draw_user_list(f, app, h[1]);
 }
 
-fn draw_chat_main(f: &mut Frame, app: &App, area: Rect) {
+fn draw_chat_main(f: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(TITLE))
@@ -305,37 +459,68 @@ fn draw_chat_main(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // The message index that the current /search match lives in (if
+    // any). Everything else renders plain; that one message gets the
+    // query substring highlighted in amber so the user can see what
+    // they jumped to.
+    let search_hit_idx = if app.search_query.is_some() && !app.search_matches.is_empty() {
+        Some(app.search_matches[app.search_idx.min(app.search_matches.len() - 1)])
+    } else {
+        None
+    };
+    let highlight_q = app.search_query.as_deref();
+
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for m in &app.messages {
-        lines.extend(render_message(m, nick));
+    for (i, m) in app.messages.iter().enumerate() {
+        let hl = if Some(i) == search_hit_idx { highlight_q } else { None };
+        lines.extend(render_message(m, nick, hl));
     }
     if app.streaming || !app.stream_buf.is_empty() {
-        if app.think_state == ThinkState::InThink {
+        let content = if app.think_state == ThinkState::InThink {
+            // model is inside a <think> block; show the animated indicator
             let frame = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-            let bot_msg = ChatMessage {
-                role: Role::Bot,
-                content: format!("{} thinking deeply...", frame),
-                time: crate::app::now(),
-            };
-            lines.extend(render_message(&bot_msg, nick));
+            format!("{} thinking deeply...", frame)
+        } else if app.streaming && app.stream_buf.is_empty() {
+            // request sent, first token not yet arrived
+            let frame = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+            format!("{} awaiting response...", frame)
         } else {
-            let content = if app.stream_buf.is_empty() {
-                "…".to_string()
-            } else {
-                app.stream_buf.clone()
-            };
-            let bot_msg = ChatMessage {
-                role: Role::Bot,
-                content,
-                time: crate::app::now(),
-            };
-            lines.extend(render_message(&bot_msg, nick));
-        }
+            // active stream -- render whatever tokens have landed
+            app.stream_buf.clone()
+        };
+        let bot_msg = ChatMessage {
+            role: Role::Bot,
+            content,
+            time: crate::app::now(),
+        };
+        // the in-flight bot_msg doesn't correspond to a saved
+        // message index, so we don't highlight it for now (the
+        // completed message gets the highlight once it's pushed
+        // into app.messages on Done).
+        lines.extend(render_message(&bot_msg, nick, None));
     }
 
+    // Apply follow_tail / scroll. `lines.len()` is the unwrapped line
+    // count, so max_scroll is approximate when wrap kicks in for very
+    // long lines; close enough for typical chat. The render clamps to
+    // the visible area, so over-shooting just means we land on the
+    // bottom which is exactly what follow_tail wants anyway.
+    let max_scroll = lines.len().saturating_sub(inner.height as usize) as u16;
+    let actual_scroll = if app.follow_tail {
+        max_scroll
+    } else {
+        app.scroll.min(max_scroll)
+    };
+    // If we ended up at the bottom anyway, re-engage auto-follow so
+    // the next streaming delta keeps us pinned there.
+    if max_scroll > 0 && actual_scroll >= max_scroll {
+        app.follow_tail = true;
+    } else if actual_scroll < max_scroll {
+        app.follow_tail = false;
+    }
     let p = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .scroll((app.scroll, 0));
+        .scroll((actual_scroll, 0));
     f.render_widget(p, inner);
 }
 
@@ -359,6 +544,9 @@ fn draw_user_list(f: &mut Frame, app: &App, area: Rect) {
         if app.think_state == ThinkState::InThink {
             let frame = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
             format!(" {} thinking", frame)
+        } else if app.stream_buf.is_empty() {
+            let frame = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+            format!(" {} awaiting", frame)
         } else {
             " (typing...)".to_string()
         }
@@ -462,7 +650,7 @@ fn wrap_pos(text: &str, width: usize) -> (usize, usize) {
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-fn render_message(m: &ChatMessage, nick: &str) -> Vec<Line<'static>> {
+fn render_message(m: &ChatMessage, nick: &str, highlight: Option<&str>) -> Vec<Line<'static>> {
     let (nick_str, nick_color) = match m.role {
         Role::You => (format!("<{}>", nick), YOU),
         Role::Bot => (format!("<{}>", BOT_NAME), BOT),
@@ -479,12 +667,26 @@ fn render_message(m: &ChatMessage, nick: &str) -> Vec<Line<'static>> {
     ];
 
     let content_lines = if matches!(m.role, Role::You | Role::Bot) {
-        render_markdown(&m.content)
+        render_markdown(&m.content, highlight)
     } else {
-        vec![Line::from(Span::styled(
-            m.content.clone(),
-            Style::default().fg(INPUT),
-        ))]
+        // System / error messages: split on \n so each visual line
+        // becomes its own Line object. Otherwise the chat scroll math
+        // sees one Line but the Paragraph renders many visual rows,
+        // and PageUp/PageDown look like no-ops when the system text
+        // overflows the visible area.
+        m.content
+            .lines()
+            .map(|line| {
+                if let Some(q) = highlight {
+                    highlight_spans(line, q, INPUT, None)
+                } else {
+                    Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(INPUT),
+                    ))
+                }
+            })
+            .collect()
     };
 
     if content_lines.is_empty() {
@@ -500,6 +702,56 @@ fn render_message(m: &ChatMessage, nick: &str) -> Vec<Line<'static>> {
     }
     result.extend(iter);
     result
+}
+
+/// Highlight every case-insensitive occurrence of `query` inside `text`
+/// by splitting it into a Vec of Spans, each match wrapped in the
+/// `match_style`. Non-matching runs keep `base_style`. `inline_code_bg`,
+/// if Some, is used as the background of non-match runs (so the
+/// highlights stand out inside a code block).
+fn highlight_spans(
+    text: &str,
+    query: &str,
+    base_color: Color,
+    inline_code_bg: Option<Color>,
+) -> Line<'static> {
+    let match_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Rgb(0xFF, 0xD5, 0x4D)) // strong amber bg
+        .add_modifier(Modifier::BOLD);
+    let base_style = if let Some(bg) = inline_code_bg {
+        Style::default().fg(base_color).bg(bg)
+    } else {
+        Style::default().fg(base_color)
+    };
+
+    if query.is_empty() {
+        return Line::from(Span::styled(text.to_string(), base_style));
+    }
+
+    let text_lower = text.to_lowercase();
+    let q_lower = query.to_lowercase();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut start = 0usize;
+    while let Some(rel) = text_lower[start..].find(&q_lower) {
+        let abs = start + rel;
+        if abs > start {
+            spans.push(Span::styled(text[start..abs].to_string(), base_style));
+        }
+        let end = abs + q_lower.len();
+        spans.push(Span::styled(
+            text[abs..end].to_string(),
+            match_style,
+        ));
+        start = end;
+    }
+    if start < text.len() {
+        spans.push(Span::styled(text[start..].to_string(), base_style));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(text.to_string(), base_style));
+    }
+    Line::from(spans)
 }
 
 fn flush_line(output: &mut Vec<Line<'static>>, current: &mut Vec<Span<'static>>) {
@@ -519,12 +771,12 @@ fn push_blank_if_needed(output: &mut Vec<Line<'static>>) {
     }
 }
 
-fn render_markdown(text: &str) -> Vec<Line<'static>> {
+fn render_markdown(text: &str, highlight: Option<&str>) -> Vec<Line<'static>> {
     // Render the markdown. If anything panics inside (e.g. an unexpected
     // event sequence from a malformed partial stream), fall back to a
     // single plain line so the TUI keeps running instead of dying.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        render_markdown_inner(text)
+        render_markdown_inner(text, highlight)
     }));
     match result {
         Ok(lines) => lines,
@@ -535,7 +787,7 @@ fn render_markdown(text: &str) -> Vec<Line<'static>> {
     }
 }
 
-fn render_markdown_inner(text: &str) -> Vec<Line<'static>> {
+fn render_markdown_inner(text: &str, highlight: Option<&str>) -> Vec<Line<'static>> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(text, options);
@@ -604,6 +856,24 @@ fn render_markdown_inner(text: &str) -> Vec<Line<'static>> {
                 if in_code_block {
                     code_buf.push_str(&code);
                     code_buf.push('\n');
+                } else if let Some(q) = highlight {
+                    // inline code with a highlighted match: same wrap as
+                    // `format!(" {} ", code)` but the match span keeps
+                    // the strong yellow bg, the rest stays BG_HI.
+                    let mut line = highlight_spans(&code, q, INPUT, Some(BG_HI));
+                    if let Some(first) = line.spans.first_mut() {
+                        let mut s = std::mem::take(&mut first.content).into_owned();
+                        s.insert(0, ' ');
+                        first.content = s.into();
+                    }
+                    if let Some(last) = line.spans.last_mut() {
+                        let mut s = std::mem::take(&mut last.content).into_owned();
+                        s.push(' ');
+                        last.content = s.into();
+                    }
+                    for span in line.spans {
+                        current.push(span);
+                    }
                 } else {
                     current.push(Span::styled(
                         format!(" {} ", code),
@@ -614,6 +884,23 @@ fn render_markdown_inner(text: &str) -> Vec<Line<'static>> {
             Event::Text(text) => {
                 if in_code_block {
                     code_buf.push_str(&text);
+                } else if let Some(q) = highlight {
+                    // replace this single text span with the highlighted
+                    // version (one or more spans with matches marked)
+                    for span in highlight_spans(&text, q, INPUT, None).spans {
+                        // re-apply bold/italic from the current context
+                        let mut s = span;
+                        s.style = s.style.patch(match (bold, italic) {
+                            (true, true) => Style::default()
+                                .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                            (true, false) => Style::default()
+                                .add_modifier(Modifier::BOLD),
+                            (false, true) => Style::default()
+                                .add_modifier(Modifier::ITALIC),
+                            _ => Style::default(),
+                        });
+                        current.push(s);
+                    }
                 } else {
                     let style = match (bold, italic) {
                         (true, true) => Style::default()

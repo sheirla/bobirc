@@ -162,6 +162,17 @@ pub enum SetupField {
     SystemPrompt,
 }
 
+/// Modal popup. A simple generic container -- title bar + scrollable
+/// body + a scroll offset. The `id` lets us restore the user's
+/// scroll position when the same popup is re-opened.
+#[derive(Debug, Clone)]
+pub struct Popup {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub scroll: u16,
+}
+
 pub struct App {
     pub screen: Screen,
     pub cfg: Config,
@@ -187,7 +198,16 @@ pub struct App {
     pub input: String,
     pub input_history: Vec<String>,
     pub history_idx: Option<usize>,
+    /// Vertical scroll offset of the chat area in lines, measured from
+    /// the top (0 = oldest visible). `follow_tail` overrides this and
+    /// pins the view to the bottom so new streaming tokens stay in
+    /// view; this value is what the user lands on when they PageUp.
     pub scroll: u16,
+    /// When true, the chat always shows the bottom-most line, even as
+    /// new tokens stream in. PageUp sets this to false; the draw step
+    /// flips it back to true once the user has manually scrolled back
+    /// to the bottom.
+    pub follow_tail: bool,
     pub streaming: bool,
     pub stream_buf: String,
     // stream cancellation: cancel flag for the forwarder task,
@@ -208,6 +228,38 @@ pub struct App {
     // spinner frame counter, advances on each Tick event so animations
     // stay in sync regardless of how busy the main loop is
     pub spinner_frame: usize,
+
+    // /search state. `query` is the active pattern (lowercased on
+    // compare), `matches` holds the message indices that contain it,
+    // `idx` is the current match for n/N navigation.
+    pub search_query: Option<String>,
+    pub search_matches: Vec<usize>,
+    pub search_idx: usize,
+
+    // -- Multi-session state --
+    /// All known sessions, newest updated_at first. Loaded from
+    /// `~/.config/bobric/sessions/` at startup and refreshed on every
+    /// create / save / delete.
+    pub sessions: Vec<crate::sessions::SessionMeta>,
+    /// Id of the session currently shown in the chat area.
+    pub active_session_id: String,
+    /// Index of the highlighted row in the left sessions panel.
+    pub session_panel_idx: usize,
+    /// True while the user is in session-nav mode (chat input disabled,
+    /// sessions panel is the keyboard focus).
+    pub session_nav_mode: bool,
+    /// Pending-delete arming flag. First 'd' sets, second 'd' confirms.
+    pub session_pending_delete: bool,
+    /// True while the user is typing a new name for the highlighted
+    /// session (after pressing 'r' in nav mode).
+    pub session_renaming: bool,
+    /// `Some` while a toast is on screen. (message, set_at).
+    pub toast: Option<(String, std::time::Instant)>,
+
+    /// Modal popup overlay (`:messages`, `:help`, etc.). `None` when
+    /// no popup is open. When `Some`, the popup intercepts all keys
+    /// and renders on top of every other widget.
+    pub popup: Option<Popup>,
 }
 
 /// Catalogue of slash commands. Single source of truth for the context
@@ -217,6 +269,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/clear", "wipe chat + history file"),
     ("/copy", "copy last bot reply to clipboard (OSC52)"),
     ("/export", "save chat to file: /export <path>"),
+    ("/search", "search chat: /search <keyword> (n=next, N=prev)"),
     ("/model", "switch model"),
     ("/setup", "open connection config"),
     ("/system", "edit system prompt"),
@@ -277,6 +330,7 @@ impl App {
             input_history: Vec::new(),
             history_idx: None,
             scroll: 0,
+            follow_tail: true,
             streaming: false,
             stream_buf: String::new(),
             stream_cancel: None,
@@ -286,6 +340,17 @@ impl App {
             think_pending: String::new(),
             menu_idx: 0,
             spinner_frame: 0,
+            search_query: None,
+            search_matches: Vec::new(),
+            search_idx: 0,
+            sessions: Vec::new(),
+            active_session_id: String::new(),
+            session_panel_idx: 0,
+            session_nav_mode: false,
+            session_pending_delete: false,
+            session_renaming: false,
+            toast: None,
+            popup: None,
         };
         if me.screen == Screen::Chat {
             me.messages.push(ChatMessage {

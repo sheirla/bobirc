@@ -1,5 +1,109 @@
 # Changelog
 
+## 0.3.0 -- 2026-06-15
+
+Multi-session, popup system, markdown, search, polish.
+
+**Multi-session**
+
+- Per-session JSON storage at `~/.config/bobric/sessions/<id>.json`
+  (one file per session, plus a `sessions` list cached in `App`).
+  Loaded on startup, saved on every message push.
+- Sessions panel on the **left** (replaces the right-side "Users"
+  panel, which is gone). Each row shows the session name + a
+  `●`/`○` active marker + the `updated_at` timestamp.
+- Session nav mode toggled by `F2`: while on, `Up`/`Down` navigate
+  the panel, `Enter` switches, `n` creates a new session, `d` is
+  an arming-delete (press twice to confirm), `Esc`/`F2` exit.
+- `Alt+1..9` quick-switches to the nth session from anywhere
+  (not just in nav mode).
+- Slash-command equivalents for everything: `/new`, `/sessions`,
+  `/switch <n|name>`, `/delete <n>`, `/rename <newname>`.
+- Auto-name: the first user message of a fresh session is used to
+  derive the session name (truncated to 30 chars at a word
+  boundary, via `sessions::auto_name`).
+
+**Popups**
+
+- Generic `Popup { id, title, body, scroll }` widget. `open_popup`
+  preserves the scroll offset if the same `id` is re-opened.
+- `/help` opens a cheatsheet popup with the full command list
+  plus a "Keys" section.
+- `?` opens a `:messages`-style log of recent `Role::System` +
+  `Role::Error` lines from the chat history.
+- Standard popup keys: `Esc`/`Enter`/`q` close, `j`/`k` or arrow
+  keys scroll one line, `PageDown`/`PageUp` scroll a page,
+  `g`/`G` jump to top/bottom.
+
+**Toasts**
+
+- Floating 3.5s notification in the top-right corner for
+  transient feedback (replace ad-hoc chat messages):
+  - Search match count (`Match 1/3 for "foo"`)
+  - Session switches / new / delete confirmations
+  - `/copy`, `/export`, `/rename`, `/delete` outcomes
+  - Errors: model missing, stream error, export failed,
+    session save failed, OSC52 not supported, etc.
+
+**Markdown rendering**
+
+- `pulldown-cmark` parser in `ui::render_markdown`; every chat
+  user/bot message runs through it and produces styled `Line`s.
+  Bold/italic/inline code/code blocks/headings/lists/blockquotes
+  supported. The whole render is wrapped in
+  `catch_unwind` as a panic guard so a malformed partial stream
+  can't kill the TUI.
+
+**Search**
+
+- `/search <keyword>` filters the current session's messages
+  case-insensitively. `n` / `N` cycle prev/next. The current
+  match is highlighted inline (amber background, black bold) in
+  the chat area. `Esc` clears the search. Match info (count,
+  hints) lives in a toast, not in the chat.
+
+**Chat hygiene**
+
+- Audit: the only `app.messages.push` calls left are for actual
+  user and bot messages. All status / error / hint messages were
+  migrated to toast or popup, so the chat is strictly
+  user <-> agent content.
+
+**Input / UX**
+
+- Streaming-cancel order swapped: `PageUp` now scrolls up
+  (toward older) and `PageDown` scrolls down (toward newer).
+  Previously inverted.
+- `follow_tail` flag pins the chat to the bottom during streaming;
+  `PageUp` disengages it.
+- Caret position in the input box accounts for wrap (uses
+  `wrap_pos` to mirror Paragraph's wrap).
+- Terminal-native text selection is enabled (no `EnableMouseCapture`),
+  so you can drag-select chat output in the alternate screen.
+  Mouse wheel is **not** captured (scroll the chat with
+  `PageUp`/`PageDown` or the terminal's native scrollback).
+- Default `system_prompt` is the in-tree 10XTHINK preset unless
+  the user has set their own.
+
+**Polish / refactor**
+
+- OSC52 clipboard module is pure-Rust (no new dep).
+- "Boblabs" name in the empty-state ASCII art is the only place
+  the brand word appears. Package, binary, config dir are all
+  `bobric`.
+- /clear now wipes the in-memory chat (history file is left in
+  place for the active session; each session has its own).
+- `Config::default` no longer pre-fills a nick; the setup screen
+  still defaults to "bob".
+
+**Installers**
+
+- `install.sh` (macOS / Linux bash) and `install.ps1` (Windows
+  PowerShell) one-liner installers. Both detect the Rust
+  toolchain, install it via `rustup` if missing, then
+  `cargo install --git ... --locked`. Set `BOBRIC_VERSION=vX.Y.Z`
+  to pin a specific tag.
+
 ## 0.2.0 -- 2026-06-14
 
 Features and bugfix pass.

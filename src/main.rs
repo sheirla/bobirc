@@ -3,11 +3,12 @@ mod app;
 mod config;
 mod history;
 mod osc52;
+mod sessions;
 mod ui;
 
 use anyhow::Result;
 use app::{
-    filtered_commands, menu_is_open, strip_think_chunk, App, ChatMessage, Role, Screen,
+    filtered_commands, menu_is_open, strip_think_chunk, App, ChatMessage, Popup, Role, Screen,
     SetupField, ThinkState, TokenUsage, COMMANDS,
 };
 use api::{list_models, stream_chat, test_connection, StreamEvent};
@@ -63,19 +64,18 @@ async fn main() -> Result<()> {
     // load config
     let cfg = config::load().unwrap_or_default();
     let mut app = App::new(cfg);
-    // load persistent message history (best effort)
-    if let Ok(saved) = history::load() {
-        if !saved.is_empty() {
-            app.messages.extend(saved);
-        }
-    }
+    init_sessions(&mut app);
 
     // terminal setup
     let mut stdout = std::io::stdout();
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(
         stdout,
-        crossterm::event::EnableMouseCapture,
+        // No mouse capture: terminal-native text selection (drag to
+        // select, Ctrl+Shift+C to copy) works inside the alternate
+        // screen. Scroll within the chat is via PageUp/PageDown; wheel
+        // events go to the terminal scrollback instead, which is the
+        // right trade-off for the use case (selecting chat output).
         crossterm::terminal::EnterAlternateScreen,
     )?;
     let backend = CrosstermBackend::new(stdout);
@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
     });
 
     // initial draw
-    terminal.draw(|f| ui::draw(f, &app))?;
+    terminal.draw(|f| ui::draw(f, &mut app))?;
 
     let res = run(&mut terminal, &mut app, &tx, &mut events, &mut rx).await;
 
@@ -106,7 +106,6 @@ async fn main() -> Result<()> {
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
-        crossterm::event::DisableMouseCapture,
         crossterm::terminal::LeaveAlternateScreen,
     )?;
     terminal.show_cursor()?;
@@ -125,7 +124,7 @@ where
     B: std::io::Write,
 {
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+        terminal.draw(|f| ui::draw(f, &mut *app))?;
 
         let evt = tokio::select! {
             Some(e) = events.next() => {
@@ -302,11 +301,7 @@ async fn handle_model_key(
                 app.cfg.model = m.id.clone();
                 save(&app.cfg)?;
                 app.screen = Screen::Chat;
-                app.messages.push(ChatMessage {
-                    role: Role::System,
-                    content: format!("Model set to: {}", m.id),
-                    time: app::now(),
-                });
+                set_toast(app, format!("Model set to: {}", m.id));
             } else {
                 app.model_status = Some("ERROR: no model selected. Press F first.".to_string());
             }
@@ -321,6 +316,40 @@ async fn handle_chat_key(
     tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
     k: KeyEvent,
 ) -> Result<()> {
+    // Modal popup. When open, all keys are intercepted here except
+    // scroll / close. Chat input is disabled.
+    if let Some(popup) = app.popup.as_mut() {
+        let popup_h = popup.body.lines().count().max(1) as u16;
+        let popup_max_scroll = popup_h.saturating_sub(8); // approx visible rows
+        match k.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                close_popup(app);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if popup.scroll < popup_max_scroll {
+                    popup.scroll += 1;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                popup.scroll = popup.scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown => {
+                popup.scroll = (popup.scroll + 8).min(popup_max_scroll);
+            }
+            KeyCode::PageUp => {
+                popup.scroll = popup.scroll.saturating_sub(8);
+            }
+            KeyCode::Char('g') => {
+                popup.scroll = 0;
+            }
+            KeyCode::Char('G') => {
+                popup.scroll = popup_max_scroll;
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     if app.streaming {
         if k.code == KeyCode::Esc {
             // cancel the in-flight stream: signal task + bump epoch
@@ -335,6 +364,83 @@ async fn handle_chat_key(
             app.think_pending.clear();
         }
         return Ok(());
+    }
+
+    // Session nav mode: chat input is disabled, all keys go to the
+    // sessions panel until the user exits (Esc / F2).
+    if app.session_nav_mode {
+        match k.code {
+            KeyCode::Esc | KeyCode::F(2) => {
+                app.session_nav_mode = false;
+                app.session_pending_delete = false;
+                return Ok(());
+            }
+            KeyCode::Up => {
+                if !app.sessions.is_empty() && app.session_panel_idx > 0 {
+                    app.session_panel_idx -= 1;
+                }
+                return Ok(());
+            }
+            KeyCode::Down => {
+                if !app.sessions.is_empty()
+                    && app.session_panel_idx + 1 < app.sessions.len()
+                {
+                    app.session_panel_idx += 1;
+                }
+                return Ok(());
+            }
+            KeyCode::Enter => {
+                if let Some(m) = app.sessions.get(app.session_panel_idx) {
+                    let id = m.id.clone();
+                    switch_session(app, &id);
+                }
+                app.session_nav_mode = false;
+                app.session_pending_delete = false;
+                return Ok(());
+            }
+            KeyCode::Char('n') => {
+                new_session(app);
+                app.session_nav_mode = false;
+                app.session_pending_delete = false;
+                return Ok(());
+            }
+            KeyCode::Char('d') => {
+                if app.session_pending_delete {
+                    let idx = app.session_panel_idx;
+                    app.session_pending_delete = false;
+                    delete_session_at(app, idx);
+                } else {
+                    app.session_pending_delete = true;
+                    set_toast(app, "Press d again to confirm delete");
+                }
+                return Ok(());
+            }
+            _ => return Ok(()), // swallow everything else in nav mode
+        }
+    }
+
+    // F2 enters session-nav mode (from chat)
+    if k.code == KeyCode::F(2) {
+        app.session_nav_mode = true;
+        app.session_pending_delete = false;
+        return Ok(());
+    }
+
+    // Alt+1..9 quick-switch. Needs the ALT modifier; plain 1..9 goes to
+    // the chat input.
+    if k.modifiers.contains(KeyModifiers::ALT) {
+        if let KeyCode::Char(c) = k.code {
+            if let Some(digit) = c.to_digit(10) {
+                if (1..=9).contains(&digit) {
+                    let idx = (digit - 1) as usize;
+                    if let Some(m) = app.sessions.get(idx) {
+                        let id = m.id.clone();
+                        switch_session(app, &id);
+                    }
+                    return Ok(());
+                }
+            }
+        }
     }
 
     // Slash menu intercepts. Only keys that exclusively belong to the
@@ -366,6 +472,79 @@ async fn handle_chat_key(
             KeyCode::Esc => {
                 // close menu by clearing the in-progress command
                 app.input.clear();
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    // `?` opens a :messages-style popup of recent system + error
+    // messages. Cheap to collect (we already have them in app.messages).
+    if k.code == KeyCode::Char('?') && k.modifiers.is_empty() {
+        let lines: Vec<String> = app
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, Role::System | Role::Error))
+            .map(|m| {
+                let prefix = match m.role {
+                    Role::Error => "! ",
+                    _ => "  ",
+                };
+                let first_line = m.content.lines().next().unwrap_or("");
+                format!("[{}] {}{}", m.time, prefix, first_line)
+            })
+            .collect();
+        let body = if lines.is_empty() {
+            "(no system or error messages yet)".to_string()
+        } else {
+            // most recent first reads more naturally in the popup
+            let mut rev = lines;
+            rev.reverse();
+            rev.join("\n")
+        };
+        open_popup(app, "messages", "Messages", &body);
+        return Ok(());
+    }
+
+    // n/N search navigation. Has to live BEFORE the main `match k.code`
+    // below so that pressing n/N doesn't fall into the Char arm and
+    // get pushed to the input first. Only active when a /search is
+    // running.
+    if app.search_query.is_some() && k.modifiers.is_empty() {
+        match k.code {
+            KeyCode::Char('n') => {
+                if !app.search_matches.is_empty() {
+                    app.search_idx = (app.search_idx + 1) % app.search_matches.len();
+                    jump_to_match(app, app.search_idx);
+                    set_toast(app, format!(
+                        "Match {}/{}",
+                        app.search_idx + 1,
+                        app.search_matches.len()
+                    ));
+                }
+                return Ok(());
+            }
+            KeyCode::Char('N') => {
+                if !app.search_matches.is_empty() {
+                    if app.search_idx == 0 {
+                        app.search_idx = app.search_matches.len() - 1;
+                    } else {
+                        app.search_idx -= 1;
+                    }
+                    jump_to_match(app, app.search_idx);
+                    set_toast(app, format!(
+                        "Match {}/{}",
+                        app.search_idx + 1,
+                        app.search_matches.len()
+                    ));
+                }
+                return Ok(());
+            }
+            KeyCode::Esc => {
+                app.search_query = None;
+                app.search_matches.clear();
+                app.search_idx = 0;
+                set_toast(app, "Search cleared");
                 return Ok(());
             }
             _ => {}
@@ -408,9 +587,22 @@ async fn handle_chat_key(
                 time: app::now(),
             };
             app.messages.push(user_msg.clone());
-            let _ = history::append_message(&user_msg);
+            // auto-name on first user message
+            if app
+                .sessions
+                .iter()
+                .find(|m| m.id == app.active_session_id)
+                .map(|m| m.name == "New chat")
+                .unwrap_or(false)
+            {
+                if let Some(meta) = app.sessions.iter_mut().find(|m| m.id == app.active_session_id) {
+                    meta.name = sessions::auto_name(&user_msg.content);
+                }
+            }
+            save_active_session(app);
             app.input.clear();
             app.scroll = 0;
+            app.follow_tail = true;
             do_stream(app, tx.clone(), text);
         }
         KeyCode::Backspace => {
@@ -439,10 +631,14 @@ async fn handle_chat_key(
             }
         }
         KeyCode::PageUp => {
-            app.scroll = app.scroll.saturating_add(5);
+            // scroll UP toward older messages: smaller offset from top
+            app.follow_tail = false;
+            app.scroll = app.scroll.saturating_sub(5);
         }
         KeyCode::PageDown => {
-            app.scroll = app.scroll.saturating_sub(5);
+            // scroll DOWN toward newer messages: larger offset from top
+            // (clamped to max_scroll in draw, which flips follow_tail back on)
+            app.scroll = app.scroll.saturating_add(5);
         }
         KeyCode::Char(c) => {
             if k.modifiers.contains(KeyModifiers::CONTROL) {
@@ -452,6 +648,7 @@ async fn handle_chat_key(
         }
         _ => {}
     }
+
     Ok(())
 }
 
@@ -465,14 +662,37 @@ fn handle_command(
     let arg = parts.next().unwrap_or("").trim();
     match cmd {
         "/help" => {
-            let help = COMMANDS
+            // Build a compact reference: every slash command + every
+            // key binding. Kept in one popup so the user has a single
+            // place to look. Press `?` for the messages log instead.
+            let cmds = COMMANDS
                 .iter()
-                .map(|(c, d)| format!("  {} — {}", c, d))
+                .map(|(c, d)| format!("  {:<14} {}", c, d))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let hint = "Shift+Enter = newline · Tab in /menu = complete · ↑/↓ = navigate";
-            let body = format!("{}\n{}", help, hint);
-            app.messages.push(ChatMessage::system(body));
+
+            let keys = "\
+  F2               session nav mode (Up/Down/Enter/n/d/Esc)
+  Alt+1..9         quick switch session
+  ?                open :messages log popup
+  Tab              autocomplete slash command (when / typed)
+  Enter            send message / run command
+  Shift+Enter      newline in input
+  Esc              cancel stream · close popup · exit nav mode
+  n / N            next / prev search match (when /search active)
+  j / k            popup scroll down / up
+  PageDown / PageUp  popup scroll
+  g / G            popup top / bottom
+  Up / Down        input history recall
+  PageUp / PageDown  chat scroll
+  q / Enter / Esc  close popup
+  Ctrl+C           quit";
+
+            let body = format!(
+                "Boblabs — slash commands\n\n{}\n\nKeys\n\n{}\n",
+                cmds, keys
+            );
+            open_popup(app, "help", "Help", &body);
         }
         "/clear" => {
             app.messages.clear();
@@ -494,17 +714,16 @@ fn handle_command(
                     let ok = osc52::copy_to_clipboard(&text);
                     if ok {
                         let preview = shorten(&text, 60);
-                        app.messages
-                            .push(ChatMessage::system(format!("Copied to clipboard: {}", preview)));
+                        set_toast(app, format!("Copied to clipboard: {}", preview));
                     } else {
-                        app.messages.push(ChatMessage::error(
-                            "Clipboard write rejected by terminal (OSC52 not supported)".to_string(),
-                        ));
+                        set_toast(
+                            app,
+                            "Clipboard write rejected (OSC52 not supported)".to_string(),
+                        );
                     }
                 }
                 None => {
-                    app.messages
-                        .push(ChatMessage::error("Nothing to copy yet".to_string()));
+                    set_toast(app, "Nothing to copy yet");
                 }
             }
         }
@@ -530,13 +749,45 @@ fn handle_command(
             };
             let text = format_chat_for_export(app);
             match std::fs::write(&path, &text) {
-                Ok(_) => app.messages.push(ChatMessage::system(format!(
-                    "Exported {} messages to {}",
-                    app.messages.len(),
-                    path.display()
-                ))),
-                Err(e) => app.messages
-                    .push(ChatMessage::error(format!("Export failed: {}", e))),
+                Ok(_) => set_toast(
+                    app,
+                    format!(
+                        "Exported {} messages to {}",
+                        app.messages.len(),
+                        path.display()
+                    ),
+                ),
+                Err(e) => set_toast(app, format!("Export failed: {}", e)),
+            }
+        }
+        "/search" => {
+            let query = arg.to_string();
+            if query.is_empty() {
+                app.search_query = None;
+                app.search_matches.clear();
+                app.search_idx = 0;
+                set_toast(app, "Search cleared");
+                return;
+            }
+            let q_lower = query.to_lowercase();
+            app.search_matches = app
+                .messages
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.content.to_lowercase().contains(&q_lower))
+                .map(|(i, _)| i)
+                .collect();
+            app.search_query = Some(query.clone());
+            app.search_idx = 0;
+            if app.search_matches.is_empty() {
+                set_toast(app, format!("No matches for \"{}\"", query));
+            } else {
+                jump_to_match(app, 0);
+                set_toast(app, format!(
+                    "Match 1/{} for \"{}\"  (n=next, N=prev, Esc=clear)",
+                    app.search_matches.len(),
+                    query
+                ));
             }
         }
         "/model" => {
@@ -548,6 +799,93 @@ fn handle_command(
                 && app.cfg.is_configured()
             {
                 do_fetch(app, tx.clone());
+            }
+        }
+        "/new" | "/newchat" => {
+            new_session(app);
+        }
+        "/sessions" | "/list" => {
+            // open a popup listing all sessions, most-recent first
+            if app.sessions.is_empty() {
+                set_toast(app, "No sessions");
+            } else {
+                let body = app
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| {
+                        let marker = if m.id == app.active_session_id {
+                            "●"
+                        } else {
+                            " "
+                        };
+                        format!("{} {:>2}. {}", marker, i + 1, m.name)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                open_popup(app, "sessions", "Sessions", &body);
+            }
+        }
+        "/switch" => {
+            // /switch <n|partial-name>
+            if arg.is_empty() {
+                set_toast(app, "Usage: /switch <n|name>");
+            } else if let Some(idx) = arg.parse::<usize>().ok() {
+                if idx == 0 || idx > app.sessions.len() {
+                    set_toast(
+                        app,
+                        format!("Index out of range (1..{})", app.sessions.len()),
+                    );
+                } else {
+                    let id = app.sessions[idx - 1].id.clone();
+                    switch_session(app, &id);
+                }
+            } else {
+                // substring match (case-insensitive) on name
+                let needle = arg.to_lowercase();
+                if let Some(m) =
+                    app.sessions.iter().find(|m| m.name.to_lowercase().contains(&needle))
+                {
+                    let id = m.id.clone();
+                    switch_session(app, &id);
+                } else {
+                    set_toast(app, format!("No session matching \"{}\"", arg));
+                }
+            }
+        }
+        "/delete" | "/del" => {
+            if arg.is_empty() {
+                set_toast(app, "Usage: /delete <n>");
+            } else if let Some(idx) = arg.parse::<usize>().ok() {
+                if idx == 0 || idx > app.sessions.len() {
+                    set_toast(
+                        app,
+                        format!("Index out of range (1..{})", app.sessions.len()),
+                    );
+                } else {
+                    delete_session_at(app, idx - 1);
+                }
+            } else {
+                set_toast(app, format!("\"{}\" is not a number", arg));
+            }
+        }
+        "/rename" => {
+            // /rename <new name> -- rename the active session
+            if arg.is_empty() {
+                set_toast(app, "Usage: /rename <new name>");
+            } else if let Some(meta) = app
+                .sessions
+                .iter_mut()
+                .find(|m| m.id == app.active_session_id)
+        {
+                meta.name = arg.to_string();
+                let id = app.active_session_id.clone();
+                save_active_session(app);
+                if let Some(m) = app.sessions.iter().find(|m| m.id == id) {
+                    set_toast(app, format!("Renamed to \"{}\"", m.name));
+                }
+            } else {
+                set_toast(app, "No active session");
             }
         }
         "/setup" => {
@@ -625,6 +963,223 @@ fn shorten(s: &str, n: usize) -> String {
     }
 }
 
+/// Scroll the chat to the message at `app.search_matches[idx]`. Counts
+/// the rendered line offsets of all earlier messages, sets `app.scroll`
+/// to land near the target line (with a couple of lines of context
+/// above so the user can see what came before), and disengages
+/// follow_tail so subsequent streaming doesn't yank the view away.
+fn jump_to_match(app: &mut App, idx: usize) {
+    if app.search_matches.is_empty() {
+        return;
+    }
+    let target = app.search_matches[idx.min(app.search_matches.len() - 1)];
+    let mut line_offset: usize = 0;
+    for (i, m) in app.messages.iter().enumerate() {
+        if i == target {
+            break;
+        }
+        // Match the line accounting in render_message: each \n is a
+        // line break, content is at least 1 line, system/error msgs
+        // already split on \n into separate Line objects.
+        line_offset += m.content.lines().count().max(1);
+    }
+    app.scroll = line_offset.saturating_sub(2) as u16;
+    app.follow_tail = false;
+}
+
+/// Populate the in-memory session list on startup. If disk has
+/// sessions, load the most-recently-updated as active. Otherwise
+/// create a default session carrying whatever messages App::new
+/// already pushed (welcome / "Using model:" notices).
+fn init_sessions(app: &mut App) {
+    match sessions::list_sessions() {
+        Ok(list) if !list.is_empty() => {
+            let active_id = list[0].id.clone();
+            app.sessions = list;
+            app.active_session_id = active_id.clone();
+            if let Ok(sess) = sessions::load_session(&active_id) {
+                app.messages = sess.messages;
+            }
+        }
+        _ => {
+            // no sessions on disk -> create a default one
+            let id = sessions::new_session_id();
+            let now = app::now();
+            let session = sessions::Session {
+                meta: sessions::SessionMeta {
+                    id: id.clone(),
+                    name: "New chat".to_string(),
+                    created_at: now.clone(),
+                    updated_at: now,
+                },
+                messages: app.messages.clone(),
+                system_prompt: app.cfg.system_prompt.clone(),
+            };
+            let _ = sessions::save_session(&session);
+            if let Ok(list) = sessions::list_sessions() {
+                app.sessions = list;
+            }
+            app.active_session_id = id;
+        }
+    }
+    app.scroll = 0;
+    app.follow_tail = true;
+}
+
+/// Persist the current session to disk. Best-effort: if the write
+/// fails we just push an error message and keep the in-memory state.
+fn save_active_session(app: &mut App) -> bool {
+    let id = app.active_session_id.clone();
+    let name = app
+        .sessions
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| "Current".to_string());
+    let now = app::now();
+    let created = app
+        .sessions
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| m.created_at.clone())
+        .unwrap_or_else(|| now.clone());
+    let session = sessions::Session {
+        meta: sessions::SessionMeta {
+            id: id.clone(),
+            name,
+            created_at: created,
+            updated_at: now,
+        },
+        messages: app.messages.clone(),
+        system_prompt: app.cfg.system_prompt.clone(),
+    };
+    match sessions::save_session(&session) {
+        Ok(()) => {
+            if let Ok(list) = sessions::list_sessions() {
+                app.sessions = list;
+            }
+            true
+        }
+        Err(e) => {
+            set_toast(app, format!("Session save failed: {}", e));
+            false
+        }
+    }
+}
+
+fn refresh_sessions_list(app: &mut App) {
+    if let Ok(list) = sessions::list_sessions() {
+        app.sessions = list;
+    }
+}
+
+fn set_toast(app: &mut App, msg: impl Into<String>) {
+    app.toast = Some((msg.into(), std::time::Instant::now()));
+}
+
+/// Open a popup, preserving scroll position if the same `id` was
+/// open before. Pass `id` like "help" or "messages" so re-opening
+/// restores the user's last scroll.
+fn open_popup(app: &mut App, id: &str, title: &str, body: &str) {
+    let preserved_scroll = app
+        .popup
+        .as_ref()
+        .filter(|p| p.id == id)
+        .map(|p| p.scroll)
+        .unwrap_or(0);
+    app.popup = Some(Popup {
+        id: id.to_string(),
+        title: title.to_string(),
+        body: body.to_string(),
+        scroll: preserved_scroll,
+    });
+}
+
+fn close_popup(app: &mut App) {
+    app.popup = None;
+}
+
+fn switch_session(app: &mut App, target_id: &str) {
+    if target_id == app.active_session_id {
+        return;
+    }
+    save_active_session(app);
+    match sessions::load_session(target_id) {
+        Ok(sess) => {
+            app.active_session_id = target_id.to_string();
+            app.messages = sess.messages;
+            app.scroll = 0;
+            app.follow_tail = true;
+            app.search_query = None;
+            app.search_matches.clear();
+            app.search_idx = 0;
+            if let Some(idx) = app.sessions.iter().position(|m| m.id == target_id) {
+                app.session_panel_idx = idx;
+            }
+            set_toast(app, format!("Switched to: {}", sess.meta.name));
+        }
+        Err(e) => {
+            set_toast(app, format!("Load failed: {}", e));
+        }
+    }
+}
+
+fn new_session(app: &mut App) {
+    save_active_session(app);
+    let id = sessions::new_session_id();
+    let now = app::now();
+    let session = sessions::Session {
+        meta: sessions::SessionMeta {
+            id: id.clone(),
+            name: "New chat".to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        },
+        messages: vec![ChatMessage::system(
+            "Welcome. Type to start. /system to set a prompt, /model to pick a model."
+                .to_string(),
+        )],
+        system_prompt: app.cfg.system_prompt.clone(),
+    };
+    if let Err(e) = sessions::save_session(&session) {
+        set_toast(app, format!("New session failed: {}", e));
+        return;
+    }
+    refresh_sessions_list(app);
+    app.active_session_id = id.clone();
+    app.messages = session.messages;
+    app.scroll = 0;
+    app.follow_tail = true;
+    app.search_query = None;
+    app.search_matches.clear();
+    app.search_idx = 0;
+    app.cfg.system_prompt = session.system_prompt;
+    if let Some(idx) = app.sessions.iter().position(|m| m.id == id) {
+        app.session_panel_idx = idx;
+    }
+    set_toast(app, "New session");
+}
+
+fn delete_session_at(app: &mut App, idx: usize) {
+    if idx >= app.sessions.len() {
+        return;
+    }
+    let target = app.sessions[idx].clone();
+    if target.id == app.active_session_id {
+        set_toast(app, "Can't delete the active session -- switch first");
+        return;
+    }
+    if let Err(e) = sessions::delete_session(&target.id) {
+        set_toast(app, format!("Delete failed: {}", e));
+        return;
+    }
+    refresh_sessions_list(app);
+    if app.session_panel_idx >= app.sessions.len() && !app.sessions.is_empty() {
+        app.session_panel_idx = app.sessions.len() - 1;
+    }
+    set_toast(app, format!("Deleted: {}", target.name));
+}
+
 fn do_fetch(app: &mut App, tx: tokio::sync::mpsc::UnboundedSender<AppEvent>) {
     app.fetching = true;
     app.model_status = Some("Fetching models...".to_string());
@@ -676,11 +1231,7 @@ fn handle_api_resp(app: &mut App, resp: ApiResponse) {
 
 fn do_stream(app: &mut App, tx: tokio::sync::mpsc::UnboundedSender<AppEvent>, text: String) {
     if app.cfg.model.is_empty() {
-        app.messages.push(ChatMessage {
-            role: Role::Error,
-            content: "No model selected. Use /model".to_string(),
-            time: app::now(),
-        });
+        set_toast(app, "No model selected. Use /model");
         return;
     }
     // cancel any prior stream first
@@ -784,16 +1335,13 @@ fn handle_stream(app: &mut App, epoch: u64, se: StreamEvent) {
                 };
                 let _ = history::append_message(&bot_msg);
                 app.messages.push(bot_msg);
+                save_active_session(app);
             }
             app.streaming = false;
             app.stream_cancel = None;
         }
         StreamEvent::Error(e) => {
-            app.messages.push(ChatMessage {
-                role: Role::Error,
-                content: format!("Stream error: {}", e),
-                time: app::now(),
-            });
+            set_toast(app, format!("Stream error: {}", e));
             app.streaming = false;
             app.stream_buf.clear();
             app.stream_cancel = None;
