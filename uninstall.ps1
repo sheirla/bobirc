@@ -4,7 +4,7 @@
 # clean. Confirm-before-delete unless -Yes is passed.
 #
 # Usage:
-#   iwr -useb https://raw.githubusercontent.com/sheirla/bobric/main/uninstall.ps1 | iex
+#   iwr -useb https://raw.githubusercontent.com/sheirla/bobirc/main/uninstall.ps1 | iex
 #
 [CmdletBinding()]
 param(
@@ -13,8 +13,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$DataDir  = Join-Path $env:USERPROFILE '.config\bobric'
-$CargoBin = Join-Path $env:USERPROFILE '.cargo\bin\bobric.exe'
+$DataDir  = Join-Path $env:USERPROFILE '.config\bobirc'
+$CargoBin = Join-Path $env:USERPROFILE '.cargo\bin\bobirc.exe'
 
 function Step($msg) { Write-Host "==> $msg" -ForegroundColor Green }
 function Warn($msg) { Write-Host "[warn] $msg" -ForegroundColor Yellow }
@@ -26,7 +26,7 @@ if (Test-Path $CargoBin) { $targets += $CargoBin }
 
 if (-not $Yes) {
     if ($targets.Count -eq 0) {
-        Write-Host "Nothing to remove -- bobric may already be uninstalled."
+        Write-Host "Nothing to remove -- bobirc may already be uninstalled."
         exit 0
     }
     Write-Host "This will REMOVE:"
@@ -54,7 +54,7 @@ if (Test-Path $CargoBin) {
 # Also drop the cargo package registry entry so a future
 # `cargo install --git ...` starts from a clean slate. Best-effort.
 if (Get-Command cargo -ErrorAction SilentlyContinue) {
-    $null = & cargo uninstall bobric 2>&1
+    $null = & cargo uninstall bobirc 2>&1
 }
 
 if (-not $removed) {
@@ -62,5 +62,5 @@ if (-not $removed) {
 }
 
 Write-Host ""
-Step "Done. bobric is fully uninstalled."
-Step 'Reinstall: iwr -useb https://raw.githubusercontent.com/sheirla/bobric/main/install.ps1 | iex'
+Step "Done. bobirc is fully uninstalled."
+Step 'Reinstall: iwr -useb https://raw.githubusercontent.com/sheirla/bobirc/main/install.ps1 | iex'

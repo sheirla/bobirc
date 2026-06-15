@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.3.2 -- 2026-06-15
+
+Bugfixes + alignment.
+
+**Bug fixes**
+
+- Search `n`/`N` navigation: removed `modifiers.is_empty()` guard so
+  pressing `N` (Shift+n) is correctly intercepted instead of being
+  typed into the chat input. The old guard blocked `N` when the
+  terminal reported Shift modifier, causing `n` to navigate while `N`
+  typed to input.
+- Search highlight consistency: `wrap_text()` was stripping highlight
+  styling from wrapped content lines. Short messages showed the match
+  highlight but long wrapped messages didn't. Fixed by re-applying
+  `highlight_spans()` after wrapping each piece.
+- Panic guard in `strip_think_chunk`: replaced `pending.drain(..)` with
+  char-based truncation so non-ASCII multi-byte content doesn't cause
+  `is_char_boundary` panics.
+
+**Chat alignment**
+
+- `PREFIX_PAD_COLS` reduced from 24 to 20 for tighter layout.
+- `NICK_FIELD_COLS` reduced from 12 to 8.
+- Pre-wrapping via `wrap_text()` ensures continuation lines from
+  Paragraph wrap land at the correct indent, not column 0.
+
+**Rename**
+
+- All remaining `bobric` references in uninstall.sh and uninstall.ps1
+  corrected to `bobirc`.
+
+**Docs**
+
+- ARCHITECTURE.md rewritten to reflect current codebase (8 modules,
+  sessions panel, popups, toasts, markdown, think-stripping,
+  keybindings table, color palette, slash commands).
+
 ## 0.3.1 -- 2026-06-15
 
 Polish pass.
