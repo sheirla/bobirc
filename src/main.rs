@@ -511,7 +511,12 @@ async fn handle_chat_key(
     // below so that pressing n/N doesn't fall into the Char arm and
     // get pushed to the input first. Only active when a /search is
     // running.
-    if app.search_query.is_some() && k.modifiers.is_empty() {
+    // n/N search navigation. Only intercept n/N (not Ctrl+N or
+    // other modified keys). Without the `modifiers.is_empty()` guard,
+    // pressing Shift+N (`N`) on terminals that report SHIFT modifier
+    // now correctly enters this block instead of being typed into the
+    // input.
+    if app.search_query.is_some() && !k.modifiers.contains(KeyModifiers::CONTROL) {
         match k.code {
             KeyCode::Char('n') => {
                 if !app.search_matches.is_empty() {

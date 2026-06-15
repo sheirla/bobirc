@@ -734,7 +734,15 @@ fn render_message(
             raw_lines.push(Line::from(""));
         } else {
             for piece in wrap_text(&text, wrap_width) {
-                raw_lines.push(Line::from(Span::raw(piece)));
+                // Re-apply highlight to the wrapped piece. Without this,
+                // Span::raw() strips the highlight styling that was
+                // applied earlier — so short messages show the highlight
+                // but long wrapped messages don't.
+                if let Some(q) = highlight {
+                    raw_lines.push(highlight_spans(&piece, q, INPUT, None));
+                } else {
+                    raw_lines.push(Line::from(Span::raw(piece)));
+                }
             }
         }
     }
