@@ -13,24 +13,6 @@ fn history_path() -> Result<PathBuf> {
     Ok(base.join("history.jsonl"))
 }
 
-pub fn load() -> Result<Vec<ChatMessage>> {
-    let path = history_path()?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let text = std::fs::read_to_string(&path).context("read history")?;
-    let mut out = Vec::new();
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(m) = serde_json::from_str::<ChatMessage>(line) {
-            out.push(m);
-        }
-    }
-    Ok(out)
-}
-
 pub fn append_message(msg: &ChatMessage) -> Result<()> {
     let path = history_path()?;
     let mut f = OpenOptions::new()

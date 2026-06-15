@@ -652,13 +652,13 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 
 /// Width of the message prefix column. Every message's prefix is
 /// padded to this exact width so continuation lines line up across
-/// messages regardless of nick length. Fixed at 20 cols:
-///   `[HH:MM:SS] ` (11) + `<nickname>` padded to 8 + ` ` (1) = 20.
+/// messages regardless of nick length. Fixed at 22 cols:
+///   `[HH:MM:SS] ` (11) + `<nickname>` padded to 10 + ` ` (1) = 22.
 const PREFIX_PAD_COLS: usize = 22;
 
 /// Width of the nick display inside the prefix, including `<>`.
-/// Nicks longer than 6 chars (display > 8 chars) will push the
-/// content slightly right, but the indent stays at 20 for
+/// Nicks longer than 8 chars (display > 10 chars) will push the
+/// content slightly right, but the indent stays at 22 for
 /// visual consistency across messages.
 const NICK_FIELD_COLS: usize = 10;
 
@@ -786,13 +786,27 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     let mut current = String::new();
     for word in text.split_whitespace() {
         if current.is_empty() {
-            current = word.to_string();
+            // single word longer than width — break it char-by-char
+            if word.chars().count() > width {
+                for chunk in word.chars().collect::<Vec<_>>().chunks(width) {
+                    out.push(chunk.iter().collect());
+                }
+            } else {
+                current = word.to_string();
+            }
         } else if current.chars().count() + 1 + word.chars().count() <= width {
             current.push(' ');
             current.push_str(word);
         } else {
             out.push(std::mem::take(&mut current));
-            current = word.to_string();
+            // if the new word itself is longer than width, break it
+            if word.chars().count() > width {
+                for chunk in word.chars().collect::<Vec<_>>().chunks(width) {
+                    out.push(chunk.iter().collect());
+                }
+            } else {
+                current = word.to_string();
+            }
         }
     }
     if !current.is_empty() {
@@ -830,16 +844,18 @@ fn highlight_spans(
     let mut start = 0usize;
     while let Some(rel) = text_lower[start..].find(&q_lower) {
         let abs = start + rel;
+        // push text between previous match and this one
         if abs > start {
-            spans.push(Span::styled(text[start..abs].to_string(), base_style));
+            spans.push(Span::styled(text[start..abs].to_string(), base_style.clone()));
         }
         let end = abs + q_lower.len();
         spans.push(Span::styled(
             text[abs..end].to_string(),
-            match_style,
+            match_style.clone(),
         ));
         start = end;
     }
+    // push remaining text
     if start < text.len() {
         spans.push(Span::styled(text[start..].to_string(), base_style));
     }

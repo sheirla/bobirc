@@ -256,9 +256,6 @@ pub struct App {
     pub session_nav_mode: bool,
     /// Pending-delete arming flag. First 'd' sets, second 'd' confirms.
     pub session_pending_delete: bool,
-    /// True while the user is typing a new name for the highlighted
-    /// session (after pressing 'r' in nav mode).
-    pub session_renaming: bool,
     /// `Some` while a toast is on screen. (message, set_at).
     pub toast: Option<(String, std::time::Instant)>,
 
@@ -354,7 +351,6 @@ impl App {
             session_panel_idx: 0,
             session_nav_mode: false,
             session_pending_delete: false,
-            session_renaming: false,
             toast: None,
             popup: None,
         };

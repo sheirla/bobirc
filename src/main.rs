@@ -433,9 +433,11 @@ async fn handle_chat_key(
             if let Some(digit) = c.to_digit(10) {
                 if (1..=9).contains(&digit) {
                     let idx = (digit - 1) as usize;
-                    if let Some(m) = app.sessions.get(idx) {
-                        let id = m.id.clone();
+                    if idx < app.sessions.len() {
+                        let id = app.sessions[idx].id.clone();
                         switch_session(app, &id);
+                    } else {
+                        set_toast(app, format!("No session #{} ({} total)", digit, app.sessions.len()));
                     }
                     return Ok(());
                 }
@@ -519,7 +521,9 @@ async fn handle_chat_key(
     if app.search_query.is_some() && !k.modifiers.contains(KeyModifiers::CONTROL) {
         match k.code {
             KeyCode::Char('n') => {
-                if !app.search_matches.is_empty() {
+                if app.search_matches.is_empty() {
+                    set_toast(app, "No matches — try /search <keyword>");
+                } else {
                     app.search_idx = (app.search_idx + 1) % app.search_matches.len();
                     jump_to_match(app, app.search_idx);
                     set_toast(app, format!(
@@ -531,7 +535,9 @@ async fn handle_chat_key(
                 return Ok(());
             }
             KeyCode::Char('N') => {
-                if !app.search_matches.is_empty() {
+                if app.search_matches.is_empty() {
+                    set_toast(app, "No matches — try /search <keyword>");
+                } else {
                     if app.search_idx == 0 {
                         app.search_idx = app.search_matches.len() - 1;
                     } else {
