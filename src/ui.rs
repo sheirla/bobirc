@@ -216,7 +216,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Screen::Chat => "CHAT",
     };
     let left = format!(
-        " bobirc v0.2 │ screen:{} │ server:{} │ nick:{} ",
+        " bobirc v0.3 │ screen:{} │ server:{} │ nick:{} ",
         screen,
         short(&mask_url(&app.cfg.base_url), 32),
         app.cfg.nick,

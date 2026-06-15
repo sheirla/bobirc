@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.3 -- 2026-06-15
+
+Code review fixes + polish.
+
+**Bug fixes**
+
+- n/N search: pressing `n` or `N` when no matches exist now shows
+  a toast instead of silently doing nothing.
+- Highlight style: `match_style` is now cloned per-span to avoid
+  mutation issues. Non-matching text retains its original color
+  (amber for system messages, not forced to white).
+- Status bar version bumped from `v0.2` to `v0.3` to match the
+  actual package version.
+- Comment/value mismatches corrected: `PREFIX_PAD_COLS` (22, not
+  20), `NICK_FIELD_COLS` (10, not 6).
+
+**Dead code cleanup**
+
+- Removed unused `session_renaming: bool` field from `App` struct.
+- Removed unused `history::load()` function (superseded by
+  `sessions::load_session`).
+- Removed unused `history.rs` import of `load`.
+
 ## 0.3.2 -- 2026-06-15
 
 Bugfixes + alignment.
