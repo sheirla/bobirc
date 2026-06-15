@@ -20,9 +20,9 @@ Polish pass.
 - `uninstall.sh` (macOS / Linux bash) and `uninstall.ps1` (Windows
   PowerShell) one-liner uninstallers. Confirm-before-delete
   (skippable via `--yes` / `-Yes`).
-- Removes `~/.config/bobric/` (config + sessions + history),
-  `~/.cargo/bin/bobric` (or `%USERPROFILE%\.cargo\bin\bobric.exe`),
-  and the `cargo` package-registry entry for `bobric` (best-effort).
+- Removes `~/.config/bobirc/` (config + sessions + history),
+  `~/.cargo/bin/bobirc` (or `%USERPROFILE%\.cargo\bin\bobirc.exe`),
+  and the `cargo` package-registry entry for `bobirc` (best-effort).
   Leaves the machine fully clean -- no leftover caches.
 - README updated with the uninstall one-liners and a "What it
   removes" section.
@@ -33,7 +33,7 @@ Multi-session, popup system, markdown, search, polish.
 
 **Multi-session**
 
-- Per-session JSON storage at `~/.config/bobric/sessions/<id>.json`
+- Per-session JSON storage at `~/.config/bobirc/sessions/<id>.json`
   (one file per session, plus a `sessions` list cached in `App`).
   Loaded on startup, saved on every message push.
 - Sessions panel on the **left** (replaces the right-side "Users"
@@ -117,7 +117,7 @@ Multi-session, popup system, markdown, search, polish.
 - OSC52 clipboard module is pure-Rust (no new dep).
 - "Boblabs" name in the empty-state ASCII art is the only place
   the brand word appears. Package, binary, config dir are all
-  `bobric`.
+  `bobirc`.
 - /clear now wipes the in-memory chat (history file is left in
   place for the active session; each session has its own).
 - `Config::default` no longer pre-fills a nick; the setup screen
@@ -146,7 +146,7 @@ Features and bugfix pass.
 
 **Features**
 
-- **Persistent message history** -- `~/.config/bobric/history.jsonl`.
+- **Persistent message history** -- `~/.config/bobirc/history.jsonl`.
   Loaded on startup, appended on every user/bot message, cleared by
   `/clear`.
 - **System prompt** -- new field in `Config` and a 4th row in the setup
@@ -187,7 +187,7 @@ Initial release.
 - mIRC-style TUI with top status bar, channel area, right-side user list, bottom input
 - OpenAI-compatible API client (list models, test connection, streaming chat completions)
 - Three-screen state machine: Setup -> ModelSelect -> Chat
-- Config persisted to `~/.config/bobric/config.json`
+- Config persisted to `~/.config/bobirc/config.json`
 - Slash commands: `/help`, `/clear`, `/model`, `/setup`, `/quit`
 - Input history recall (Up/Down)
 - Async event loop with tokio + crossterm EventStream

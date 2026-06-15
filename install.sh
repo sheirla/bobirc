@@ -2,23 +2,23 @@
 # Bobric installer (macOS / Linux)
 #
 # Usage:
-#   curl -sSf https://raw.githubusercontent.com/sheirla/bobric/main/install.sh | sh
+#   curl -sSf https://raw.githubusercontent.com/sheirla/bobirc/main/install.sh | sh
 #
 # Env vars:
 #   BOBRIC_VERSION   pin a specific git tag/branch (default: main)
-#   BOBRIC_REPO      override the git URL (default: github.com/sheirla/bobric)
+#   BOBRIC_REPO      override the git URL (default: github.com/sheirla/bobirc)
 #
 set -euo pipefail
 
-REPO_URL="${BOBRIC_REPO:-https://github.com/sheirla/bobric}"
+REPO_URL="${BOBRIC_REPO:-https://github.com/sheirla/bobirc}"
 VERSION="${BOBRIC_VERSION:-main}"
-BINARY="bobric"
+BINARY="bobirc"
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[err]\033[0m %s\n' "$*" >&2; exit 1; }
 
-say "bobric installer (target: $REPO_URL @ $VERSION)"
+say "bobirc installer (target: $REPO_URL @ $VERSION)"
 
 # 1. Ensure Rust toolchain
 if ! command -v cargo >/dev/null 2>&1; then
@@ -31,7 +31,7 @@ fi
 
 say "Rust: $(rustc --version)  cargo: $(cargo --version)"
 
-# 2. Build + install bobric
+# 2. Build + install bobirc
 say "Building and installing '$BINARY' (this can take a few minutes on first run)..."
 if [ "$VERSION" = "main" ] || [ -z "$VERSION" ]; then
     cargo install --git "$REPO_URL" --locked

@@ -1,7 +1,7 @@
 //! On-disk storage for chat sessions.
 //!
 //! Each session lives in its own JSON file under
-//! `~/.config/bobric/sessions/<id>.json`. The file holds the full
+//! `~/.config/bobirc/sessions/<id>.json`. The file holds the full
 //! session metadata + the message array + the per-session system
 //! prompt. We deliberately don't keep a separate index file: the
 //! `list_sessions` call just globs the directory and parses each

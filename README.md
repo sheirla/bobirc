@@ -5,7 +5,7 @@ in Rust with [ratatui](https://ratatui.rs).
 
 > **Note**: the "Boblabs" name in the empty-state ASCII art is a
 > branding reference only. The package, binary, and config dir are
-> all named `bobric`.
+> all named `bobirc`.
 
 ## Install
 
@@ -14,22 +14,22 @@ in Rust with [ratatui](https://ratatui.rs).
 macOS / Linux (bash):
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/sheirla/bobric/main/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/sheirla/bobirc/main/install.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/sheirla/bobric/main/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/sheirla/bobirc/main/install.ps1 | iex
 ```
 
 The installer:
 
 1. Installs the Rust toolchain via [rustup](https://rustup.rs) if
    it's not already present
-2. Builds and installs `bobric` via `cargo install --git ...`
-3. Drops the binary at `~/.cargo/bin/bobric` (or
-   `%USERPROFILE%\.cargo\bin\bobric.exe` on Windows)
+2. Builds and installs `bobirc` via `cargo install --git ...`
+3. Drops the binary at `~/.cargo/bin/bobirc` (or
+   `%USERPROFILE%\.cargo\bin\bobirc.exe` on Windows)
 4. Prints a hint to add `~/.cargo/bin` to your `PATH` if it isn't
    already
 
@@ -42,21 +42,21 @@ BOBRIC_VERSION=v0.3.0 curl -sSf ... | sh
 ### From source
 
 ```bash
-git clone https://github.com/sheirla/bobric
-cd bobric
+git clone https://github.com/sheirla/bobirc
+cd bobirc
 cargo install --path .
 ```
 
 ### Prebuilt binaries
 
-Check the [Releases page](https://github.com/sheirla/bobric/releases)
+Check the [Releases page](https://github.com/sheirla/bobirc/releases)
 for prebuilt binaries (Linux x86_64, macOS universal, Windows
-x86_64). Download, extract, and put `bobric` on your `PATH`.
+x86_64). Download, extract, and put `bobirc` on your `PATH`.
 
 ## Run
 
 ```bash
-bobric
+bobirc
 ```
 
 First launch goes to the **Setup** screen. Tab between fields, Enter
@@ -70,7 +70,7 @@ To re-run setup later: `/setup`. To re-pick a model: `/model`.
 - **mIRC-style TUI** — sessions sidebar (left), chat area, input
   box, status bar, toast overlays
 - **Multi-session** — JSON-per-session storage at
-  `~/.config/bobric/sessions/<id>.json`. Switch between them
+  `~/.config/bobirc/sessions/<id>.json`. Switch between them
   via `F2` (nav mode), `Alt+1..9` (quick switch), or
   `/switch <n|name>`. Sessions auto-name from the first user
   message.
@@ -135,7 +135,7 @@ To re-run setup later: `/setup`. To re-pick a model: `/model`.
 
 ## Configuration
 
-Config at `~/.config/bobric/config.json`:
+Config at `~/.config/bobirc/config.json`:
 
 ```json
 {
@@ -172,26 +172,26 @@ history) so the machine is left clean — no leftover caches.
 macOS / Linux:
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/sheirla/bobric/main/uninstall.sh | sh
+curl -sSf https://raw.githubusercontent.com/sheirla/bobirc/main/uninstall.sh | sh
 # skip confirmation:
-curl -sSf https://raw.githubusercontent.com/sheirla/bobric/main/uninstall.sh | sh -s -- --yes
+curl -sSf https://raw.githubusercontent.com/sheirla/bobirc/main/uninstall.sh | sh -s -- --yes
 ```
 
 Windows (PowerShell):
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/sheirla/bobric/main/uninstall.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/sheirla/bobirc/main/uninstall.ps1 | iex
 # skip confirmation (note: needs the -Yes passed through to the script):
-iwr -useb https://raw.githubusercontent.com/sheirla/bobric/main/uninstall.ps1 | iex -Args '-Yes'
+iwr -useb https://raw.githubusercontent.com/sheirla/bobirc/main/uninstall.ps1 | iex -Args '-Yes'
 ```
 
 What it removes:
 
-- `~/.config/bobric/` — config.json, sessions/, history.jsonl
+- `~/.config/bobirc/` — config.json, sessions/, history.jsonl
   (resolves `$XDG_CONFIG_HOME` first, then falls back to
-  `~/.config/bobric`)
-- `~/.cargo/bin/bobric` (or `%USERPROFILE%\.cargo\bin\bobric.exe`)
-- The `cargo` package-registry entry for `bobric` (best-effort, so
+  `~/.config/bobirc`)
+- `~/.cargo/bin/bobirc` (or `%USERPROFILE%\.cargo\bin\bobirc.exe`)
+- The `cargo` package-registry entry for `bobirc` (best-effort, so
   re-installing from a different source starts from a clean slate)
 
 Confirmation prompt before deletion (skippable via `--yes` / `-Yes`).
@@ -202,8 +202,8 @@ Confirmation prompt before deletion (skippable via `--yes` / `-Yes`).
 cargo build --release
 ```
 
-Output binary at `target/release/bobric`. Run `cargo install --path .`
-to install to `~/.cargo/bin/bobric`.
+Output binary at `target/release/bobirc`. Run `cargo install --path .`
+to install to `~/.cargo/bin/bobirc`.
 
 ## License
 

@@ -117,10 +117,16 @@ pub fn strip_think_chunk(
                     *state = ThinkState::Normal;
                 }
                 None => {
-                    // Drop everything that cannot be the start of `</think>`.
-                    if pending.len() > THINK_CLOSE.len() - 1 {
-                        let keep = THINK_CLOSE.len() - 1;
-                        pending.drain(..pending.len() - keep);
+                    // Keep the last (THINK_CLOSE.len() - 1) chars in case
+                    // they begin a tag. Work in chars to avoid panicking
+                    // on multi-byte UTF-8 boundaries when a streamed
+                    // chunk ends in the middle of a non-ASCII codepoint.
+                    let keep = THINK_CLOSE.chars().count() - 1;
+                    let total_chars = pending.chars().count();
+                    if total_chars > keep {
+                        let drop = total_chars - keep;
+                        let new: String = pending.chars().skip(drop).collect();
+                        *pending = new;
                     }
                     break;
                 }
@@ -238,7 +244,7 @@ pub struct App {
 
     // -- Multi-session state --
     /// All known sessions, newest updated_at first. Loaded from
-    /// `~/.config/bobric/sessions/` at startup and refreshed on every
+    /// `~/.config/bobirc/sessions/` at startup and refreshed on every
     /// create / save / delete.
     pub sessions: Vec<crate::sessions::SessionMeta>,
     /// Id of the session currently shown in the chat area.
@@ -273,7 +279,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/model", "switch model"),
     ("/setup", "open connection config"),
     ("/system", "edit system prompt"),
-    ("/quit", "exit bobric"),
+    ("/quit", "exit bobirc"),
 ];
 
 /// True when the slash command context menu should be drawn. Derives

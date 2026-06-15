@@ -40,22 +40,22 @@ async fn main() -> Result<()> {
     // CLI flags: print and exit before touching config or terminal.
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("bobric {}", env!("CARGO_PKG_VERSION"));
+        println!("bobirc {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "bobric — mIRC-style TUI chat for OpenAI-compatible LLM APIs\n\
+            "bobirc — mIRC-style TUI chat for OpenAI-compatible LLM APIs\n\
              \n\
              USAGE:\n    \
-                 bobric\n\
+                 bobirc\n\
              \n\
              OPTIONS:\n    \
                  -h, --help     print this help and exit\n    \
                  -V, --version  print version and exit\n\
              \n\
-             CONFIG:    ~/.config/bobric/config.json\n  \
-             HISTORY:   ~/.config/bobric/history.jsonl\n  \
+             CONFIG:    ~/.config/bobirc/config.json\n  \
+             HISTORY:   ~/.config/bobirc/history.jsonl\n  \
              KEYS:      see README.md"
         );
         return Ok(());
@@ -730,7 +730,7 @@ fn handle_command(
         }
         "/export" => {
             let path = if arg.is_empty() {
-                // default to <config_dir>/bobric-export-<timestamp>.txt
+                // default to <config_dir>/bobirc-export-<timestamp>.txt
                 let stamp = app::now().replace(':', "");
                 let dir = match config::config_path().and_then(|p| {
                     p.parent()
@@ -744,7 +744,7 @@ fn handle_command(
                         return;
                     }
                 };
-                dir.join(format!("bobric-export-{}.txt", stamp))
+                dir.join(format!("bobirc-export-{}.txt", stamp))
             } else {
                 std::path::PathBuf::from(arg)
             };
@@ -912,7 +912,7 @@ fn handle_command(
 fn format_chat_for_export(app: &App) -> String {
     use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
     let mut out = String::new();
-    out.push_str(&format!("# bobric chat export — {}\n\n", app::now()));
+    out.push_str(&format!("# bobirc chat export — {}\n\n", app::now()));
     for m in &app.messages {
         let role = match m.role {
             Role::You => "you",

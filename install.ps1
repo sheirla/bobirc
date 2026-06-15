@@ -1,7 +1,7 @@
 # Bobric installer (Windows PowerShell)
 #
 # Usage:
-#   iwr -useb https://raw.githubusercontent.com/sheirla/bobric/main/install.ps1 | iex
+#   iwr -useb https://raw.githubusercontent.com/sheirla/bobirc/main/install.ps1 | iex
 #
 # Env vars:
 #   $env:BOBRIC_VERSION   pin a specific git tag/branch (default: main)
@@ -9,15 +9,15 @@
 #
 $ErrorActionPreference = 'Stop'
 
-$RepoUrl = if ($env:BOBRIC_REPO) { $env:BOBRIC_REPO } else { 'https://github.com/sheirla/bobric' }
+$RepoUrl = if ($env:BOBRIC_REPO) { $env:BOBRIC_REPO } else { 'https://github.com/sheirla/bobirc' }
 $Version = if ($env:BOBRIC_VERSION) { $env:BOBRIC_VERSION } else { 'main' }
-$Binary  = 'bobric.exe'
+$Binary  = 'bobirc.exe'
 
 function Step($msg) { Write-Host "==> $msg" -ForegroundColor Green }
 function Warn($msg) { Write-Host "[warn] $msg" -ForegroundColor Yellow }
 function Die($msg)  { Write-Host "[err] $msg" -ForegroundColor Red; exit 1 }
 
-Step "bobric installer (target: $RepoUrl @ $Version)"
+Step "bobirc installer (target: $RepoUrl @ $Version)"
 
 # 1. Ensure Rust toolchain
 $cargo = Get-Command cargo -ErrorAction SilentlyContinue
@@ -36,7 +36,7 @@ if (-not $cargo) {
 
 Step "Rust: $(rustc --version)  cargo: $(cargo --version)"
 
-# 2. Build + install bobric
+# 2. Build + install bobirc
 Step "Building and installing '$Binary' (this can take a few minutes on first run)..."
 if ($Version -eq 'main' -or [string]::IsNullOrEmpty($Version)) {
     cargo install --git $RepoUrl --locked

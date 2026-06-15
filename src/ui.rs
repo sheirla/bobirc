@@ -216,7 +216,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Screen::Chat => "CHAT",
     };
     let left = format!(
-        " bobric v0.2 │ screen:{} │ server:{} │ nick:{} ",
+        " bobirc v0.2 │ screen:{} │ server:{} │ nick:{} ",
         screen,
         short(&mask_url(&app.cfg.base_url), 32),
         app.cfg.nick,
@@ -473,7 +473,7 @@ fn draw_chat_main(f: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, m) in app.messages.iter().enumerate() {
         let hl = if Some(i) == search_hit_idx { highlight_q } else { None };
-        lines.extend(render_message(m, nick, hl));
+        lines.extend(render_message(m, nick, hl, inner.width as usize));
     }
     if app.streaming || !app.stream_buf.is_empty() {
         let content = if app.think_state == ThinkState::InThink {
@@ -497,7 +497,7 @@ fn draw_chat_main(f: &mut Frame, app: &mut App, area: Rect) {
         // message index, so we don't highlight it for now (the
         // completed message gets the highlight once it's pushed
         // into app.messages on Done).
-        lines.extend(render_message(&bot_msg, nick, None));
+        lines.extend(render_message(&bot_msg, nick, None, inner.width as usize));
     }
 
     // Apply follow_tail / scroll. `lines.len()` is the unwrapped line
@@ -650,23 +650,40 @@ fn wrap_pos(text: &str, width: usize) -> (usize, usize) {
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Width of the message prefix column (timestamp + nick + space).
-/// Used to align continuation lines under the content, not the start
-/// of the line. Generous enough for nicks up to ~12 chars
-/// (`<boblabs> `, `<setup_user> `, etc.).
-const CONTENT_INDENT_COLS: usize = 20;
+/// Width of the message prefix column. Every message's prefix is
+/// padded to this exact width so continuation lines line up across
+/// messages regardless of nick length. Fixed at 20 cols:
+///   `[HH:MM:SS] ` (11) + `<nickname>` padded to 8 + ` ` (1) = 20.
+const PREFIX_PAD_COLS: usize = 22;
 
-fn render_message(m: &ChatMessage, nick: &str, highlight: Option<&str>) -> Vec<Line<'static>> {
+/// Width of the nick display inside the prefix, including `<>`.
+/// Nicks longer than 6 chars (display > 8 chars) will push the
+/// content slightly right, but the indent stays at 20 for
+/// visual consistency across messages.
+const NICK_FIELD_COLS: usize = 10;
+
+fn render_message(
+    m: &ChatMessage,
+    nick: &str,
+    highlight: Option<&str>,
+    chat_width: usize,
+) -> Vec<Line<'static>> {
     let (nick_str, nick_color) = match m.role {
         Role::You => (format!("<{}>", nick), YOU),
         Role::Bot => (format!("<{}>", BOT_NAME), BOT),
         Role::System => ("***".to_string(), SYSTEM),
         Role::Error => ("!ERR".to_string(), ERROR),
     };
+    // Right-pad the nick display to NICK_FIELD_COLS so the prefix
+    // (timestamp + nick + space) totals exactly PREFIX_PAD_COLS.
+    // Trailing spaces live in the styled span -- they show as
+    // un-highlighted cells since ratatui's default background is
+    // transparent.
+    let nick_padded = format!("{:<width$}", nick_str, width = NICK_FIELD_COLS);
     let prefix = vec![
         Span::styled(format!("[{}] ", m.time), Style::default().fg(DIM)),
         Span::styled(
-            nick_str,
+            nick_padded,
             Style::default().fg(nick_color).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
@@ -699,21 +716,36 @@ fn render_message(m: &ChatMessage, nick: &str, highlight: Option<&str>) -> Vec<L
         return vec![Line::from(prefix)];
     }
 
+    // Pre-wrap each content line so the Paragraph widget doesn't
+    // wrap a single Line across the wrap point -- otherwise the
+    // wrapped portion would land at column 0 without the indent.
+    // We work in chars to be UTF-8 safe. Styling is preserved on
+    // the first line; wrapped continuations drop the spans (they
+    // become plain). Acceptable trade-off for proper alignment.
+    let wrap_width = chat_width.saturating_sub(PREFIX_PAD_COLS).max(10);
+    let mut raw_lines: Vec<Line<'static>> = Vec::new();
+    for line in content_lines {
+        let text: String = line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        if text.is_empty() {
+            raw_lines.push(Line::from(""));
+        } else {
+            for piece in wrap_text(&text, wrap_width) {
+                raw_lines.push(Line::from(Span::raw(piece)));
+            }
+        }
+    }
+
     // Indent every continuation line so it sits under the content
     // column, not column 0. Same applies to word-wrap continuations
     // -- the indent pad goes BEFORE the content so the wrap aligns.
-    let indent_pad: String = " ".repeat(CONTENT_INDENT_COLS);
-    let pad_span = |spans: &mut Vec<Span<'static>>| {
-        // Prepend a single space pad span to the line. We don't want
-        // a styled span -- the pad is invisible.
-        spans.insert(
-            0,
-            Span::raw(indent_pad.clone()),
-        );
-    };
+    let indent_pad: String = " ".repeat(PREFIX_PAD_COLS);
 
-    let mut result: Vec<Line<'static>> = Vec::with_capacity(content_lines.len());
-    let mut iter = content_lines.into_iter();
+    let mut result: Vec<Line<'static>> = Vec::with_capacity(raw_lines.len());
+    let mut iter = raw_lines.into_iter();
     if let Some(first) = iter.next() {
         let mut first_spans = prefix;
         first_spans.extend(first.spans);
@@ -723,7 +755,7 @@ fn render_message(m: &ChatMessage, nick: &str, highlight: Option<&str>) -> Vec<L
         // blank lines (e.g. between markdown paragraphs) stay blank
         let is_blank = line.spans.iter().all(|s| s.content.trim().is_empty());
         if !is_blank {
-            pad_span(&mut line.spans);
+            line.spans.insert(0, Span::raw(indent_pad.clone()));
         }
         result.push(line);
     }
@@ -735,6 +767,35 @@ fn render_message(m: &ChatMessage, nick: &str, highlight: Option<&str>) -> Vec<L
 /// `match_style`. Non-matching runs keep `base_style`. `inline_code_bg`,
 /// if Some, is used as the background of non-match runs (so the
 /// highlights stand out inside a code block).
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    if text.chars().count() <= width {
+        return vec![text.to_string()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current = word.to_string();
+        } else if current.chars().count() + 1 + word.chars().count() <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            out.push(std::mem::take(&mut current));
+            current = word.to_string();
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        out.push(text.to_string());
+    }
+    out
+}
+
 fn highlight_spans(
     text: &str,
     query: &str,
@@ -816,6 +877,9 @@ fn render_markdown(text: &str, highlight: Option<&str>) -> Vec<Line<'static>> {
 fn render_markdown_inner(text: &str, highlight: Option<&str>) -> Vec<Line<'static>> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_TASKLISTS);
     let parser = Parser::new_ext(text, options);
 
     let mut output: Vec<Line<'static>> = Vec::new();
